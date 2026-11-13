@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Output data (keep folder, ignore contents)
+notarycafe_output/*
+!notarycafe_output/.gitkeep
+
+# Logs
+*.log
+error_log_*.jsonl
+
+# Chrome user data
+C:\Users\nishu\AppData\Local\Google\Chrome\User Data/
+
+# Large files
+*.exe
+*.msi
+*.zip
+*.rar
+
+# Node modules
+node_modules/
+
+# Environment files
+.env
+.env.local

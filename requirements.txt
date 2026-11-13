@@ -1,0 +1,7 @@
+# NotaryCafe Scraper Requirements
+playwright==1.44.0
+pandas==2.2.1
+openpyxl==3.1.2
+asyncio
+dataclasses
+typing_extensions
