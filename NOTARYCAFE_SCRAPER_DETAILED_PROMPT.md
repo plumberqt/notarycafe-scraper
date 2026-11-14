@@ -277,6 +277,87 @@ ADDR_PATTERNS = [
 ]
 # Also parse JSON-LD address object
 
+# 7. SOCIAL MEDIA LINKS - Extract from HTML (after scroll ensures all loaded):
+social_links = {}
+
+# Strategy A: Direct anchor tag selectors (most reliable)
+for selector in SOCIAL_LINK_SELECTORS:
+    try:
+        links = await page.query_selector_all(selector)
+        for link in links:
+            href = await link.get_attribute('href')
+            if href and href.startswith('http'):
+                # Classify by domain
+                domain = href.lower()
+                if 'facebook.com' in domain or 'fb.com' in domain:
+                    social_links['facebook'] = href
+                elif 'instagram.com' in domain or 'instagr.am' in domain:
+                    social_links['instagram'] = href
+                elif 'linkedin.com' in domain:
+                    social_links['linkedin'] = href
+                elif 'twitter.com' in domain or 'x.com' in domain:
+                    social_links['twitter'] = href
+                elif 'youtube.com' in domain or 'youtu.be' in domain:
+                    social_links['youtube'] = href
+                elif 'tiktok.com' in domain:
+                    social_links['tiktok'] = href
+                elif 'pinterest.com' in domain:
+                    social_links['pinterest'] = href
+                elif 'snapchat.com' in domain:
+                    social_links['snapchat'] = href
+                elif 'whatsapp.com' in domain:
+                    social_links['whatsapp'] = href
+                elif 'telegram.me' in domain or 't.me' in domain:
+                    social_links['telegram'] = href
+                elif 'google.com/maps' in domain:
+                    social_links['google_maps'] = href
+                else:
+                    # Could be website or other
+                    if 'website' not in social_links:
+                        social_links['website'] = href
+    except:
+        continue
+
+# Strategy B: Regex on raw_html (catches links not in standard anchors)
+for platform, patterns in SOCIAL_MEDIA_PATTERNS.items():
+    if platform not in social_links:  # Only if not already found
+        for pattern in patterns:
+            matches = re.findall(pattern, raw_html, re.IGNORECASE)
+            if matches:
+                # Take first valid match
+                for match in matches:
+                    if match.startswith('http'):
+                        social_links[platform] = match
+                        break
+                if platform in social_links:
+                    break
+
+# Strategy C: JSON-LD structured data (sameAs property)
+for match in json_ld:
+    try:
+        data = json.loads(match.strip())
+        if isinstance(data, dict) and 'sameAs' in data:
+            same_as = data['sameAs']
+            if isinstance(same_as, list):
+                for url in same_as:
+                    url_lower = url.lower()
+                    if 'facebook.com' in url_lower or 'fb.com' in url_lower:
+                        social_links['facebook'] = url
+                    elif 'instagram.com' in url_lower or 'instagr.am' in url_lower:
+                        social_links['instagram'] = url
+                    elif 'linkedin.com' in url_lower:
+                        social_links['linkedin'] = url
+                    elif 'twitter.com' in url_lower or 'x.com' in url_lower:
+                        social_links['twitter'] = url
+                    elif 'youtube.com' in url_lower or 'youtu.be' in url_lower:
+                        social_links['youtube'] = url
+                    elif 'tiktok.com' in url_lower:
+                        social_links['tiktok'] = url
+                    elif 'pinterest.com' in url_lower:
+                        social_links['pinterest'] = url
+    except:
+        pass
+
 # 5. COMMISSION:
 COMMISSION_PATTERNS = [
     r'[Cc]ommission\s*(?:number|#|no\.?)\s*[:\-]?\s*([A-Z0-9\-]+)',
@@ -296,6 +377,65 @@ SEMANTIC_FIELDS = {
     'errors_omissions_insurance': r'(?:[Ee]rrors?|[Oo]missions?|[E&O])\s*[:\-]\s*([^\n]{5,100})',
     'notary_type': r'[Nn]otary\s*[Tt]ype\s*[:\-]\s*([^\n]{5,100})',
 }
+
+# 7. SOCIAL MEDIA LINK EXTRACTION (NEW - From detail page HTML):
+# Extract ALL social media profile links from the page
+SOCIAL_MEDIA_PATTERNS = {
+    'facebook': [
+        r'(https?://(?:www\.)?facebook\.com/[A-Za-z0-9\.\-_]+)',
+        r'(https?://(?:www\.)?fb\.com/[A-Za-z0-9\.\-_]+)',
+    ],
+    'instagram': [
+        r'(https?://(?:www\.)?instagram\.com/[A-Za-z0-9\.\-_]+)',
+        r'(https?://instagr\.am/[A-Za-z0-9\.\-_]+)',
+    ],
+    'linkedin': [
+        r'(https?://(?:www\.)?linkedin\.com/in/[A-Za-z0-9\-\_]+)',
+        r'(https?://(?:www\.)?linkedin\.com/company/[A-Za-z0-9\-\_]+)',
+    ],
+    'twitter': [
+        r'(https?://(?:www\.)?twitter\.com/[A-Za-z0-9\_]+)',
+        r'(https?://(?:www\.)?x\.com/[A-Za-z0-9\_]+)',
+    ],
+    'youtube': [
+        r'(https?://(?:www\.)?youtube\.com/(?:c/|channel/|user/|@)[A-Za-z0-9\-\_]+)',
+        r'(https?://youtu\.be/[A-Za-z0-9\-\_]+)',
+    ],
+    'tiktok': [
+        r'(https?://(?:www\.)?tiktok\.com/@[A-Za-z0-9\.\-_]+)',
+    ],
+    'pinterest': [
+        r'(https?://(?:www\.)?pinterest\.com/[A-Za-z0-9\-\_]+)',
+    ],
+    'google_maps': [
+        r'(https?://(?:www\.)?google\.com/maps/place/[^"\s]+)',
+    ],
+    'website': [
+        r'(https?://(?:www\.)?[A-Za-z0-9\-\.]+\.[A-Za-z]{2,}(?:/[^"\s]*)?)',
+    ],
+}
+
+# Generic social link finder (catches any platform):
+SOCIAL_LINK_SELECTORS = [
+    'a[href*="facebook.com"]',
+    'a[href*="fb.com"]',
+    'a[href*="instagram.com"]',
+    'a[href*="linkedin.com"]',
+    'a[href*="twitter.com"]',
+    'a[href*="x.com"]',
+    'a[href*="youtube.com"]',
+    'a[href*="tiktok.com"]',
+    'a[href*="pinterest.com"]',
+    'a[href*="snapchat.com"]',
+    'a[href*="whatsapp.com"]',
+    'a[href*="telegram.me"]',
+    'a[href*="t.me"]',
+    'a[class*="social"]',
+    'a[class*="icon-facebook"]',
+    'a[class*="icon-instagram"]',
+    'a[class*="icon-linkedin"]',
+    'a[class*="icon-twitter"]',
+]
 ```
 
 ### Phase 9: Build Complete Record
@@ -316,7 +456,20 @@ detail = {
     'phone': phone or '',
     'mobile': '',           # Separate if distinguishable
     'fax': '',
-    'website': '',
+    'website': social_links.get('website', ''),
+    
+    # SOCIAL MEDIA
+    'facebook': social_links.get('facebook', ''),
+    'instagram': social_links.get('instagram', ''),
+    'linkedin': social_links.get('linkedin', ''),
+    'twitter': social_links.get('twitter', ''),  # X/Twitter
+    'youtube': social_links.get('youtube', ''),
+    'tiktok': social_links.get('tiktok', ''),
+    'pinterest': social_links.get('pinterest', ''),
+    'snapchat': social_links.get('snapchat', ''),
+    'whatsapp': social_links.get('whatsapp', ''),
+    'telegram': social_links.get('telegram', ''),
+    'google_maps': social_links.get('google_maps', ''),
     
     # ADDRESS
     'street_address': street_address or '',
@@ -417,6 +570,17 @@ error_log_YYYYMMDD_HHMMSS.jsonl
 | mobile | string | Mobile phone (if separate) |
 | fax | string | Fax number |
 | website | string | Website URL |
+| **facebook** | string | **Facebook profile/page URL** |
+| **instagram** | string | **Instagram profile URL** |
+| **linkedin** | string | **LinkedIn profile/company URL** |
+| **twitter** | string | **X/Twitter profile URL** |
+| **youtube** | string | **YouTube channel URL** |
+| **tiktok** | string | **TikTok profile URL** |
+| **pinterest** | string | **Pinterest profile URL** |
+| **snapchat** | string | **Snapchat profile URL** |
+| **whatsapp** | string | **WhatsApp business link** |
+| **telegram** | string | **Telegram channel/link** |
+| **google_maps** | string | **Google Maps place URL** |
 | street_address | string | Street address |
 | city | string | City from detail page |
 | state | string | State from detail page |
@@ -451,6 +615,11 @@ error_log_YYYYMMDD_HHMMSS.jsonl
 | Email | `email` |
 | Phone | `phone` |
 | Mobile | `mobile` |
+| **Facebook** | `facebook` |
+| **Instagram** | `instagram` |
+| **LinkedIn** | `linkedin` |
+| **Twitter/X** | `twitter` |
+| **Website** | `website` |
 | Address | Concatenated: street, city, state zip |
 | Commission_Number | `commission_number` |
 | Commission_Expiration | `commission_expiration` |
@@ -518,6 +687,24 @@ OPTIONAL_FIELDS = [
     'business_hours', 'fees', 'coverage_area', 'years_in_business',
     'background_check', 'city_searched', 'state_searched'
 ]
+
+# Social Media Fields (NEW - Highly Recommended for AntiGravity):
+SOCIAL_MEDIA_FIELDS = [
+    'facebook',      # Facebook profile/page URL
+    'instagram',     # Instagram profile URL
+    'linkedin',      # LinkedIn profile/company URL
+    'twitter',       # X/Twitter profile URL
+    'youtube',       # YouTube channel URL
+    'tiktok',        # TikTok profile URL
+    'pinterest',     # Pinterest profile URL
+    'snapchat',      # Snapchat profile URL
+    'whatsapp',      # WhatsApp business link
+    'telegram',      # Telegram channel/link
+    'google_maps',   # Google Maps place URL
+]
+
+# For AntiGravity entity enrichment, combine:
+ALL_ANTIGRAVITY_FIELDS = REQUIRED_FIELDS + OPTIONAL_FIELDS + SOCIAL_MEDIA_FIELDS
 ```
 
 ### 2. Direct CSV Import
@@ -531,12 +718,20 @@ df = pd.read_csv('notarycafe_listings_20261114_143022.csv')
 valid = df[df['email'].notna() & (df['email'] != '')]
 valid = valid[valid['name'].notna() & (valid['name'] != '')]
 
-# AntiGravity pipeline
+# AntiGravity pipeline with social media enrichment
 for _, row in valid.iterrows():
+    # Build social media object for AntiGravity
+    social_media = {}
+    for platform in ['facebook', 'instagram', 'linkedin', 'twitter', 'youtube', 
+                     'tiktok', 'pinterest', 'snapchat', 'whatsapp', 'telegram', 'google_maps']:
+        if row.get(platform) and row[platform] != '':
+            social_media[platform] = row[platform]
+    
     antigravity.ingest({
         'source': 'notarycafe',
         'source_id': row['listing_url'].split('/')[-1],
-        'data': row.to_dict()
+        'data': row.to_dict(),
+        'social_media': social_media,  # Separate object for platform indexing
     })
 ```
 
@@ -655,6 +850,14 @@ Before ingesting, verify:
 - [ ] `listing_url` starts with `https://www.notarycafe.com/`
 - [ ] No duplicate `listing_url` in batch
 - [ ] `scraped_at` is recent (within last run)
+- [ ] **Social media URLs** are valid HTTP/HTTPS links (if present)
+- [ ] **Facebook** URLs contain `facebook.com` or `fb.com`
+- [ ] **Instagram** URLs contain `instagram.com` or `instagr.am`
+- [ ] **LinkedIn** URLs contain `linkedin.com`
+- [ ] **Twitter/X** URLs contain `twitter.com` or `x.com`
+- [ ] **YouTube** URLs contain `youtube.com` or `youtu.be`
+- [ ] **TikTok** URLs contain `tiktok.com`
+- [ ] **Google Maps** URLs contain `google.com/maps`
 
 ---
 
