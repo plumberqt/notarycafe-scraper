@@ -1,166 +1,98 @@
-# NotaryCafe Directory Scraper
+# NotaryCafe Complete Automated Directory Scraper
 
-A robust, adaptive web scraper for extracting notary public listings from [NotaryCafe.com](https://www.notarycafe.com) using Playwright with Chrome persistent context.
-
-## Features
-
-- **Adaptive scraping**: Handles variable listings per page, unknown page counts, and empty results
-- **Resumable progress**: Saves progress per city, can resume from interruption
-- **Incremental saves**: Writes data every 10 listings (configurable)
-- **Anti-detection**: Uses real Chrome profile with persistent context
-- **Comprehensive data extraction**: Gets all available fields from detail pages
-- **Error handling**: Detailed error logging with context
-- **Multi-format output**: Excel (.xlsx) with multiple sheets + CSV
-
-## Data Extracted
-
-### Summary Fields (from search results)
-- Listing name & URL
-- City/State searched
-- Page number & position
-
-### Detail Fields (from individual listing pages)
-- **Contact**: Name, Email, Phone, Mobile, Fax, Website
-- **Address**: Street, City, State, ZIP, County
-- **Commission**: Number, Expiration date
-- **Credentials**: Bonding company, E&O insurance, Notary type
-- **Services**: Services offered, Languages spoken
-- **Business**: Hours, Fees, Coverage area
-- **Background**: Years in business, Background check status
-- **Metadata**: Scraped timestamp, source URL, raw HTML
-
-## Setup
-
-### Prerequisites
-- Python 3.10+
-- Google Chrome installed
-- Existing Chrome profile with NotaryCafe login (if required)
-
-### Installation
-
-```bash
-# Clone the repo
-git clone <your-repo-url>
-cd notarycafe-scraper
-
-# Create virtual environment
-python -m venv venv
-venv\Scripts\activate  # Windows
-# source venv/bin/activate  # Mac/Linux
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Install Playwright browsers
-playwright install chromium
-```
-
-### Configuration
-
-Edit the `config` dictionary in `notarycafe_scraper.py` or create a config file:
-
-```python
-config = {
-    'cities_file': r'D:\Karan\cities-basic-v2025_structured.xlsx',
-    'chrome_user_data': r'C:\Users\YOUR_USER\AppData\Local\Google\Chrome\User Data',
-    'profile_dir': 'Profile 3',  # Your Chrome profile with NotaryCafe login
-    'output_dir': r'D:\Karan\notarycafe_output',
-    'delay_range': (4, 8),        # Delay between listings (seconds)
-    'page_delay_range': (3, 6),   # Delay between pages (seconds)
-    'max_retries': 3,
-    'batch_size': 10              # Save every N listings
-}
-```
-
-### Cities File Format
-
-The scraper expects an Excel file with a sheet named `All_Cities_Raw` containing:
-- `State` - Full state name
-- `State_Abbr` - State abbreviation (optional)
-- `City` - City name
-- `GeoID` - Geographic ID (optional)
-
-## Usage
-
-```bash
-# Run the scraper
-python notarycafe_scraper.py
-```
-
-The scraper will:
-1. Load cities from the Excel file
-2. Resume from previous progress (if exists)
-3. Open Chrome with your profile
-4. Search each city on NotaryCafe
-5. Navigate through all pages
-6. Click each listing and extract full details
-7. Save incrementally to Excel + CSV
-
-## Output Files
-
-```
-notarycafe_output/
-├── notarycafe_listings_YYYYMMDD_HHMMSS.xlsx   # Main data (2 sheets: All_Listings, Summary)
-├── notarycafe_listings_YYYYMMDD_HHMMSS.csv    # CSV export
-├── scraping_progress_YYYYMMDD_HHMMSS.json     # Resume progress
-└── error_log_YYYYMMDD_HHMMSS.jsonl            # Error details
-```
-
-## Key Implementation Details
-
-### Adaptive Element Detection
-The scraper tries multiple CSS selector strategies to find listings:
-- Table rows (`table tbody tr`)
-- Listing/result/card divs
-- Direct links to `/listing/` or `/profile/`
-
-### Pagination Handling
-- Detects pagination containers automatically
-- Finds "Next" buttons via multiple strategies
-- Falls back to page number clicking
-- Handles "no results" pages gracefully
-
-### Detail Page Extraction
-Uses multiple strategies:
-1. Text pattern matching (regex for emails, phones, addresses)
-2. JSON-LD structured data parsing
-3. HTML attribute scanning (mailto:, tel:)
-4. Semantic label matching (Services:, Hours:, etc.)
-
-### Progress Persistence
-- Tracks completed cities
-- Saves current page per city
-- Records last listing index processed
-- Counts errors per city
-- Auto-saves every batch + on completion
-
-## Running from Home
-
-Since the repo includes:
-- `notarycafe_scraper.py` - Main scraper
-- `cities-basic-v2025_structured.xlsx` - Cities data
-- `requirements.txt` - Dependencies
-- `notarycafe_output/` - Output folder structure
-
-You can clone on any machine and run after:
-1. Installing Python + dependencies
-2. Updating Chrome user data path in config
-3. Having a Chrome profile with NotaryCafe access
-
-## Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| Chrome won't launch | Close all Chrome windows first; check profile path |
-| No listings found | Check if logged into NotaryCafe in that profile |
-| Stuck on page | Increase `delay_range` in config |
-| Missing data | Site structure changed; check selectors in `find_listing_elements()` |
-| Permission errors | Run terminal as admin; check folder permissions |
-
-## License
-
-MIT License - Feel free to use and modify.
+A production-grade, highly resilient web scraper for extracting notary public listings and detailed profiles from [NotaryCafe.com](https://notarycafe.com) using Playwright with anti-bot stealth mechanisms.
 
 ---
 
-**Note**: This scraper is for educational/research purposes. Respect NotaryCafe's Terms of Service and robots.txt. Add appropriate delays and don't overload their servers.
+## 🚀 Features
+
+- **Dual Excel Outputs**:
+  - `notarycafe_listings_summary.xlsx`: Quick search results table (10 listings/page) with direct contact info and social media links.
+  - `notarycafe_detailed_profiles.xlsx`: Deep profile crawl with all structured sections (Bio, Billing/Shipping, Pricing items, State Licenses, Insurances, Background Checks, Capabilities, Availability, Languages, Social Links).
+- **Social Media Extraction**: Automatically parses profile links for Facebook, LinkedIn, Twitter/X, Instagram, YouTube, TikTok, etc.
+- **Smart City Search**: Searches directly by City Name to ensure complete listing coverage.
+- **Auto-Resume & State Tracking**: Real-time checkpoint tracking in `progress.json` ensures zero duplicated work across restarts.
+- **Resilient & Anti-Detection**:
+  - Launches real Chrome with automation flags disabled (`--disable-blink-features=AutomationControlled`).
+  - Automatic retry on network/VPN lag without crashing.
+  - Graceful handling of Excel file locks if files are open while scraping.
+
+---
+
+## 📁 Repository Structure
+
+```
+├── scrape_notarycafe_complete.py         # Main automated scraper script
+├── start_notary_scraper.bat              # One-click Windows batch runner
+├── cities-basic-v2025_structured.xlsx    # Master US cities dataset (All_Cities_Raw)
+├── NOTARYCAFE_SCRAPER_DETAILED_PROMPT.md # Complete technical specification
+├── requirements.txt                      # Python dependencies
+├── README.md                             # Documentation & Setup guide
+└── notarycafe_output/                    # Auto-generated output directory
+    ├── notarycafe_listings_summary.xlsx
+    ├── notarycafe_detailed_profiles.xlsx
+    └── progress.json
+```
+
+---
+
+## 🛠️ Quick Setup & Installation
+
+### 1. Prerequisites
+- Python 3.10+
+- Google Chrome installed on your machine
+- VPN connected to a **USA location** (NotaryCafe is a US-focused service)
+
+### 2. Install Dependencies
+```bash
+git clone https://github.com/plumberqt/notarycafe-scraper.git
+cd notarycafe-scraper
+
+pip install -r requirements.txt
+playwright install chromium
+```
+
+---
+
+## 🏃 Running the Scraper
+
+### Method 1: One-Click Launcher (Windows)
+Double-click:
+```
+start_notary_scraper.bat
+```
+
+### Method 2: Command Line / AntiGravity Terminal
+```powershell
+# Run continuously across all cities (auto-resumes from last saved checkpoint):
+python scrape_notarycafe_complete.py
+
+# Test a single city (e.g. Bloomington, IN) for 1 page:
+python scrape_notarycafe_complete.py --city "Bloomington" --state "IN" --single-city --max-pages 1
+
+# Resume from a specific city:
+python scrape_notarycafe_complete.py --city "Gordon" --state "AL"
+```
+
+---
+
+## 📊 Extracted Data Columns
+
+### 1. Summary File (`notarycafe_listings_summary.xlsx`)
+- `City_Searched`, `State_Searched`, `Page_Number`, `Position_on_Page`
+- `Name`, `Company_Name`, `City`, `State`, `Zip_Code`
+- `Phone`, `Email`, `Profile_URL`
+- `Facebook_URL`, `LinkedIn_URL`, `Twitter_X_URL`, `Instagram_URL`, `Other_Social_Links`
+- `Scraped_At`
+
+### 2. Detailed Profiles File (`notarycafe_detailed_profiles.xlsx`)
+- **Member Info**: `Name`, `Profile_URL`, `Member_ID`, `Pro_Member_Until`, `Membership_Status`, `Zip_Codes_Covered`
+- **Intro & Bio**: `Introduction_Text`, `Types_of_Closings`, `Service_Area`, `Background`, `Work_History`, `Interests`, `Personal_Bio_Full`
+- **Company**: `Company_Name`, `In_Business_Since`
+- **Billing & Shipping**: Preferred, Addresses, City, State, Zip
+- **Contact**: `Phone_Work`, `Phone_Mobile`, `Phone_Home`, `Phone_Text_Enabled`, `Email_Work`, `Email_Personal`
+- **Pricing**: Individual standard pricing categories, `Pricing_All_Items`, `Other_Pricing_Notes`
+- **Credentials**: `Custom_Fields`, `State_Licenses`, `Insurances`, `Background_Provider`, `Background_Conducted`, `Background_Expiration`, `Background_Ref_Number`
+- **Capabilities & Hours**: `Capabilities`, `Other_Capability_Info`, `Available_Days`, `Available_Times`, `Other_Availability_Notes`, `Spoken_Languages`
+- **Social Media & Links**: `Website_URL`, `Facebook_URL`, `LinkedIn_URL`, `Twitter_X_URL`, `Instagram_URL`, `Other_Social_Links`, `Document_Links`
+- **Audit Metadata**: `City_Searched`, `State_Searched`, `Page_Number`, `Position_on_Page`, `Scraped_At`
