@@ -64,14 +64,37 @@ Double-click:
 ```
 start_notary_scraper.bat
 ```
+Jab aap launcher open karenge, terminal screen par aapse puchhega:
+```
+======================================================================
+             NOTARYCAFE SCRAPER - EXECUTION MENU
+======================================================================
+  [1] Fresh Start (Shuru se start karein - Nayi Excel files + Alphabet A to Z)
+      -> Purani files ka safe backup ban jayega (notarycafe_output/backup_...)
+      -> Teeno brand new empty Excel files banengi
+      -> Alphabet 'A' se 'Z' tak complete start hoga
+
+  [2] Resume (Jaha pichli baar chhoda tha wahi se continue karein)
+      -> Existing Excel files aur progress.json read karega
+      -> Completed cities ko skip karke next pending city se scrape karega
+======================================================================
+Aapka chunav [1 ya 2, Default: 2]: 
+```
 
 ### Method 2: Command Line / AntiGravity Terminal
 ```powershell
-# Run continuously across all cities (auto-resumes sequentially from progress.json):
+# Interactive mode (puchhega 1: Fresh Start ya 2: Resume):
 python scrape_notarycafe_complete.py
+
+# Direct Fresh Start (Alphabet A to Z se shuru karein aur purana data backup karein):
+python scrape_notarycafe_complete.py --fresh
+
+# Direct Resume (Bina puchhe jaha chhoda tha wahi se continue karein):
+python scrape_notarycafe_complete.py --resume
 
 # Test a single city (e.g. Bloomington, IN):
 python scrape_notarycafe_complete.py --city "Bloomington" --state "IN" --single-city
+```
 
 # Test with a maximum page limit per city (e.g. 1 page):
 python scrape_notarycafe_complete.py --city "Bloomington" --state "IN" --single-city --max-pages 1

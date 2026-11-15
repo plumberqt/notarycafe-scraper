@@ -8,7 +8,9 @@ Generates three structured Excel files:
   3. notarycafe_detailed_profiles.xlsx  (Full deep profile data for each notary across all sections)
 
 Supports:
-  - Starting from a specific city or continuing sequentially from cities-basic-v2025_structured.xlsx
+  - Interactive Mode: Prompts user whether to Start Fresh (New Excel files + Alphabet A to Z) or Resume from checkpoint
+  - Automatic Safe Backup: Backs up previous Excel files and progress into timestamped backup folder on Fresh start
+  - Alphabetical Sorting: Scrapes all US cities alphabetically from A to Z (Abbeville -> Boston -> ... -> Zwolle)
   - Automatic multi-page pagination through ALL pages per city (Page 1, 2, 3...) until listings end
   - Tracking 0 results for cities with no listings and exact listing/page counts for cities with listings
   - Opening each profile in a new tab, extracting all fields, closing tab, returning to results
@@ -21,6 +23,8 @@ import asyncio
 import json
 import os
 import re
+import sys
+import shutil
 import random
 from pathlib import Path
 from datetime import datetime
@@ -50,12 +54,95 @@ SOCIAL_PATTERNS = {
     'tiktok': [r'https?://(?:www\.)?tiktok\.com/@[A-Za-z0-9\.\-_]+'],
 }
 
-def load_cities_from_excel(target_city=None, target_state=None):
-    """Load cities from Excel file. If target specified, moves that city to the front."""
+def backup_existing_files():
+    """Safely moves existing output Excel files and progress.json into a timestamped backup folder."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_dir = OUTPUT_DIR / f"backup_{timestamp}"
+    
+    files_to_backup = [CITY_STATS_EXCEL, SUMMARY_EXCEL, DETAILED_EXCEL, PROGRESS_FILE]
+    existing = [f for f in files_to_backup if f.exists()]
+    
+    if not existing:
+        print("[INFO] No previous output files found. Ready for a clean fresh start.")
+        return
+        
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    
+    while True:
+        try:
+            for f in existing:
+                shutil.copy2(f, backup_dir / f.name)
+            for f in existing:
+                if f.exists():
+                    f.unlink()
+            print(f"\n[BACKUP SUCCESS] Purani files ka safe backup ban gaya: notarycafe_output/{backup_dir.name}/")
+            print("[FRESH START] Active output folder reset ho gaya. Nayi fresh Excel files banengi.\n")
+            break
+        except PermissionError as pe:
+            print(f"\n[FILE LOCKED] Ek ya zyada Excel files open hain: {pe}")
+            print("Kripya open Excel files (notarycafe_*.xlsx) ko CLOSE karein aur Enter dabayein...")
+            try:
+                input()
+            except Exception:
+                break
+
+
+def prompt_user_mode():
+    """Prompts the user interactively in console whether to start fresh or resume."""
+    print("\n" + "=" * 70)
+    print("             NOTARYCAFE SCRAPER - EXECUTION MENU")
+    print("=" * 70)
+    print("  [1] Fresh Start (Shuru se start karein - Nayi Excel files + Alphabet A to Z)")
+    print("      -> Purani files ka safe backup ban jayega (notarycafe_output/backup_...)")
+    print("      -> Teeno brand new empty Excel files banengi")
+    print("      -> Alphabet 'A' se 'Z' tak complete start hoga")
+    print()
+    print("  [2] Resume (Jaha pichli baar chhoda tha wahi se continue karein)")
+    print("      -> Existing Excel files aur progress.json read karega")
+    print("      -> Completed cities ko skip karke next pending city se scrape karega")
+    print("=" * 70)
+    
+    choice = ""
+    try:
+        choice = input("Aapka chunav [1 ya 2, Default: 2]: ").strip()
+    except (EOFError, Exception):
+        choice = "2"
+        
+    if choice in ["1", "fresh", "f", "new", "shuru"]:
+        print("\nCity sorting order kaisa chahiye?")
+        print("  [1] City Name Alphabet A to Z (Abbeville -> Boston -> ... -> Zwolle) [Recommended]")
+        print("  [2] State-wise A to Z (Alabama A-Z -> Alaska A-Z -> ... -> Wyoming A-Z)")
+        try:
+            sort_choice = input("Order chunav [1 ya 2, Default: 1]: ").strip()
+        except (EOFError, Exception):
+            sort_choice = "1"
+            
+        sort_by = "state" if sort_choice == "2" else "city"
+        return "fresh", sort_by
+    else:
+        return "resume", "city"
+
+
+def load_cities_from_excel(target_city=None, target_state=None, sort_by="city"):
+    """Load cities from Excel file.
+    If sort_by == 'city', sorts alphabetically by city name (A to Z).
+    If sort_by == 'state', sorts state-wise (AL to WY).
+    If target_city specified, moves that city to the front."""
     print(f"Loading cities from: {CITIES_EXCEL}")
     df = pd.read_excel(CITIES_EXCEL, sheet_name="All_Cities_Raw")
-    cities = []
     
+    if sort_by == "city":
+        df = df.sort_values(
+            by=["City", "State"],
+            key=lambda col: col.str.lower() if col.name == "City" else col
+        )
+    elif sort_by == "state":
+        df = df.sort_values(
+            by=["State", "City"],
+            key=lambda col: col.str.lower() if col.name == "City" else col
+        )
+        
+    cities = []
     seen = set()
     for _, row in df.iterrows():
         c_name = str(row["City"]).strip()
@@ -69,7 +156,7 @@ def load_cities_from_excel(target_city=None, target_state=None):
                 "population": row.get("Population_2025", 0)
             })
             
-    print(f"Loaded {len(cities)} unique cities from file.")
+    print(f"Loaded {len(cities)} unique cities from file (Order: {sort_by.upper()}).")
     
     if target_city:
         target_idx = None
@@ -317,7 +404,6 @@ class NotaryCafeScraper:
         # Find all 'View Profile' links
         view_profile_links = await page.query_selector_all('a:has-text("View Profile")')
         if not view_profile_links:
-            # Fallback check for any links starting with / that lead to member profiles
             links = await page.query_selector_all('a[href]')
             view_profile_links = []
             for l in links:
@@ -335,7 +421,6 @@ class NotaryCafeScraper:
                 href = await link_el.get_attribute("href")
                 if not href or href.strip() in ["#", "", "/"] or href.endswith("#"):
                     continue
-                # Ignore system routes
                 clean_href = href.strip().lower()
                 if any(clean_href == bad or clean_href.startswith(bad) for bad in ["/register", "/plan", "/about", "/contact", "/terms", "/privacy", "/forum", "http://facebook.com", "http://twitter.com"]):
                     continue
@@ -346,7 +431,6 @@ class NotaryCafeScraper:
                 card_el = await link_el.evaluate_handle('el => el.closest("div, li, tr") ? el.closest("div, li, tr").innerText : ""')
                 card_text = str(card_el) if card_el else ""
                 
-                # In case evaluation didn't get full container, walk up 2-3 levels
                 card_container = await link_el.evaluate_handle('''el => {
                     let p = el.parentElement;
                     while (p && p.innerText && p.innerText.length < 50 && p.parentElement) {
@@ -356,7 +440,6 @@ class NotaryCafeScraper:
                 }''')
                 card_full_text = str(card_container) if card_container else card_text
                 
-                # Extract fields from card
                 name = ""
                 company = ""
                 c_city = ""
@@ -365,24 +448,20 @@ class NotaryCafeScraper:
                 c_phone = ""
                 c_email = ""
                 
-                # Name & Company from lines
                 lines = [l.strip() for l in card_full_text.split("\n") if l.strip() and "miles" not in l.lower() and "profile completion" not in l.lower() and "view profile" not in l.lower()]
                 if lines:
                     name = lines[0]
                     if len(lines) > 1 and not any(ch.isdigit() for ch in lines[1]):
                         company = lines[1]
                         
-                # Phone regex
                 phone_match = re.search(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', card_full_text)
                 if phone_match:
                     c_phone = phone_match.group(0)
                     
-                # Email regex
                 email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', card_full_text)
                 if email_match:
                     c_email = email_match.group(0)
                     
-                # Location regex (City State Zip)
                 loc_match = re.search(r'([A-Za-z\s]+)\s+([A-Z]{2})\s+(\d{5})', card_full_text)
                 if loc_match:
                     c_city = loc_match.group(1).strip()
@@ -392,7 +471,6 @@ class NotaryCafeScraper:
                     c_city = city
                     c_state = state
 
-                # Extract social links from card
                 card_social = self.extract_social_links(card_full_text)
                 
                 item = {
@@ -428,7 +506,6 @@ class NotaryCafeScraper:
             for pat in patterns:
                 m = re.search(pat, text_or_html, re.IGNORECASE)
                 if m:
-                    # Ignore generic share links
                     url = m.group(0)
                     if "notarycafe" not in url.lower() and "sharer" not in url.lower() and "intent" not in url.lower():
                         found[platform] = url
@@ -459,11 +536,9 @@ class NotaryCafeScraper:
             await asyncio.sleep(0.5)
             await detail_page.evaluate("() => window.scrollTo(0, 0)")
             
-            # Get text and html
             page_text = await detail_page.inner_text("body")
             page_html = await detail_page.content()
             
-            # --- EXTRACT ALL REQUIRED FIELDS ---
             # 1. Name & Member Info
             h1 = await detail_page.query_selector("h1")
             name = (await h1.inner_text()).strip() if h1 else summary_info.get("Name", "")
@@ -672,7 +747,6 @@ class NotaryCafeScraper:
                     doc_links.append(doc)
             docs_str = ", ".join(doc_links)
             
-            # Build final full profile record
             detail_record = {
                 # Name & Member Info
                 "Name": name,
@@ -779,12 +853,12 @@ class NotaryCafeScraper:
             await detail_page.close()
 
     async def run(self):
-        print("\n" + "=" * 60)
+        print("\n" + "=" * 65)
         print("Starting NotaryCafe Scraper...")
         print(f"Target Excel 1 (City Stats):     {CITY_STATS_EXCEL}")
         print(f"Target Excel 2 (Summary Cards):  {SUMMARY_EXCEL}")
         print(f"Target Excel 3 (Full Profiles):  {DETAILED_EXCEL}")
-        print("=" * 60)
+        print("=" * 65)
         
         async with async_playwright() as p:
             print("Launching visible Chrome with anti-detection flags...")
@@ -835,7 +909,6 @@ class NotaryCafeScraper:
                         
                     print(f"\n>>> [{c_idx}/{len(self.cities)}] PROCESSING CITY: {city}, {state}")
                     
-                    # 1. Search for city
                     searched = await self.search_city(search_page, city, state)
                     if not searched:
                         print(f"Failed to submit search for {city}, {state}. Recording status...")
@@ -853,7 +926,7 @@ class NotaryCafeScraper:
                     current_page = 1
                     city_listings_count = 0
                     
-                    # 2. Multi-page pagination loop (scrapes ALL pages until no more pages)
+                    # Multi-page pagination loop (scrapes ALL pages until no more pages)
                     while True:
                         print(f"\n--- [City: {city}, {state}] Processing Page {current_page} ---")
                         
@@ -989,14 +1062,36 @@ class NotaryCafeScraper:
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="NotaryCafe Automated Directory Scraper")
-    parser.add_argument("--city", default=None, help="Starting city name (e.g. Bloomington). If omitted, resumes sequentially.")
+    parser.add_argument("--city", default=None, help="Starting city name (e.g. Bloomington).")
     parser.add_argument("--state", default=None, help="Starting state abbreviation (e.g. IN).")
-    parser.add_argument("--max-pages", type=int, default=None, help="Maximum pages to scrape per city (e.g. 1 for quick test)")
-    parser.add_argument("--single-city", action="store_true", help="Scrape only the specified city then stop")
+    parser.add_argument("--fresh", action="store_true", help="Start completely fresh from Alphabet A to Z (backups old data).")
+    parser.add_argument("--resume", action="store_true", help="Resume from last saved checkpoint without asking.")
+    parser.add_argument("--sort-by", choices=["city", "state"], default="city", help="Sort order: 'city' (A to Z by city) or 'state' (State-wise A to Z).")
+    parser.add_argument("--max-pages", type=int, default=None, help="Maximum pages to scrape per city.")
+    parser.add_argument("--single-city", action="store_true", help="Scrape only the specified city then stop.")
     args = parser.parse_args()
 
-    print(f"Scraper target: {args.city or 'Auto-Resume (Sequential)'}, {args.state or 'Auto'} | Single city: {args.single_city} | Max pages: {args.max_pages}")
-    cities_list = load_cities_from_excel(target_city=args.city, target_state=args.state)
+    # Determine execution mode: command line flag OR interactive menu
+    if args.fresh:
+        mode = "fresh"
+        sort_by = args.sort_by
+    elif args.resume:
+        mode = "resume"
+        sort_by = args.sort_by
+    elif sys.stdin.isatty():
+        mode, sort_by = prompt_user_mode()
+    else:
+        mode = "resume"
+        sort_by = args.sort_by
+
+    if mode == "fresh":
+        print("\n--- INITIATING FRESH START (ALPHABET A TO Z) ---")
+        backup_existing_files()
+    else:
+        print("\n--- INITIATING RESUME MODE (CHECKING EXISTING FILES) ---")
+
+    print(f"Scraper target: {args.city or 'Sequential Order'}, {args.state or 'Auto'} | Mode: {mode.upper()} | Sort: {sort_by.upper()} | Single city: {args.single_city} | Max pages: {args.max_pages}")
+    cities_list = load_cities_from_excel(target_city=args.city, target_state=args.state, sort_by=sort_by)
     scraper = NotaryCafeScraper(
         cities_list, 
         start_city=args.city, 
