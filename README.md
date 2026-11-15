@@ -4,11 +4,13 @@ A production-grade, highly resilient web scraper for extracting notary public li
 
 ---
 
-## 🚀 Features
+## 🚀 Key Features
 
-- **Dual Excel Outputs**:
-  - `notarycafe_listings_summary.xlsx`: Quick search results table (10 listings/page) with direct contact info and social media links.
-  - `notarycafe_detailed_profiles.xlsx`: Deep profile crawl with all structured sections (Bio, Billing/Shipping, Pricing items, State Licenses, Insurances, Background Checks, Capabilities, Availability, Languages, Social Links).
+- **Triple Excel Outputs**:
+  - `notarycafe_city_stats.xlsx`: **City Summary & Statistics Report** — Tracks every searched city with `City`, `State`, `Total_Listings_Found` (0 if no notaries found, exact count if found), `Total_Pages`, `Status` (`Completed`, `No Results`, `Search Failed`), and timestamp. Ideal for high-level analytics, verification, and reporting.
+  - `notarycafe_listings_summary.xlsx`: Quick search results table (10 listings per page) with direct contact info and social media links.
+  - `notarycafe_detailed_profiles.xlsx`: Deep profile crawl with all 18 structured sections (Bio, Billing/Shipping, Pricing items, State Licenses, Insurances, Background Checks, Capabilities, Availability, Languages, Social Links).
+- **Full Multi-Page Traversal**: For cities with high density (>10 listings across Page 1, Page 2, Page 3, etc.), the scraper automatically paginates through all pages until every single listing is scraped.
 - **Social Media Extraction**: Automatically parses profile links for Facebook, LinkedIn, Twitter/X, Instagram, YouTube, TikTok, etc.
 - **Smart City Search**: Searches directly by City Name to ensure complete listing coverage.
 - **Auto-Resume & State Tracking**: Real-time checkpoint tracking in `progress.json` ensures zero duplicated work across restarts.
@@ -29,9 +31,10 @@ A production-grade, highly resilient web scraper for extracting notary public li
 ├── requirements.txt                      # Python dependencies
 ├── README.md                             # Documentation & Setup guide
 └── notarycafe_output/                    # Auto-generated output directory
-    ├── notarycafe_listings_summary.xlsx
-    ├── notarycafe_detailed_profiles.xlsx
-    └── progress.json
+    ├── notarycafe_city_stats.xlsx        # City-level reporting & listing counts
+    ├── notarycafe_listings_summary.xlsx  # Page-level summary cards + social links
+    ├── notarycafe_detailed_profiles.xlsx # Full deep profiles (18 sections)
+    └── progress.json                     # Real-time resume checkpoint
 ```
 
 ---
@@ -64,28 +67,41 @@ start_notary_scraper.bat
 
 ### Method 2: Command Line / AntiGravity Terminal
 ```powershell
-# Run continuously across all cities (auto-resumes from last saved checkpoint):
+# Run continuously across all cities (auto-resumes sequentially from progress.json):
 python scrape_notarycafe_complete.py
 
-# Test a single city (e.g. Bloomington, IN) for 1 page:
+# Test a single city (e.g. Bloomington, IN):
+python scrape_notarycafe_complete.py --city "Bloomington" --state "IN" --single-city
+
+# Test with a maximum page limit per city (e.g. 1 page):
 python scrape_notarycafe_complete.py --city "Bloomington" --state "IN" --single-city --max-pages 1
 
 # Resume from a specific city:
-python scrape_notarycafe_complete.py --city "Gordon" --state "AL"
+python scrape_notarycafe_complete.py --city "Florala" --state "AL"
 ```
 
 ---
 
-## 📊 Extracted Data Columns
+## 📊 Extracted Data Columns & Files
 
-### 1. Summary File (`notarycafe_listings_summary.xlsx`)
+### 1. City Statistics File (`notarycafe_city_stats.xlsx`)
+| Column | Description |
+|---|---|
+| `City` | Name of city searched |
+| `State` | State abbreviation (e.g. `AL`, `IN`) |
+| `Total_Listings_Found` | Exact count of listings found (0 if no results) |
+| `Total_Pages` | Total pages scraped (0 if no results) |
+| `Status` | `Completed` (listings scraped), `No Results` (0 found), or `Search Failed` |
+| `Scraped_At` | Timestamp of completion |
+
+### 2. Summary File (`notarycafe_listings_summary.xlsx`)
 - `City_Searched`, `State_Searched`, `Page_Number`, `Position_on_Page`
 - `Name`, `Company_Name`, `City`, `State`, `Zip_Code`
 - `Phone`, `Email`, `Profile_URL`
 - `Facebook_URL`, `LinkedIn_URL`, `Twitter_X_URL`, `Instagram_URL`, `Other_Social_Links`
 - `Scraped_At`
 
-### 2. Detailed Profiles File (`notarycafe_detailed_profiles.xlsx`)
+### 3. Detailed Profiles File (`notarycafe_detailed_profiles.xlsx`)
 - **Member Info**: `Name`, `Profile_URL`, `Member_ID`, `Pro_Member_Until`, `Membership_Status`, `Zip_Codes_Covered`
 - **Intro & Bio**: `Introduction_Text`, `Types_of_Closings`, `Service_Area`, `Background`, `Work_History`, `Interests`, `Personal_Bio_Full`
 - **Company**: `Company_Name`, `In_Business_Since`

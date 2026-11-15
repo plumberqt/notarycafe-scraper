@@ -2,15 +2,17 @@
 NotaryCafe Complete Automated Scraper
 ====================================
 Scrapes notary listings and detailed profiles from https://notarycafe.com/
-Generates two structured Excel files:
-  1. notarycafe_listings_summary.xlsx  (10 listings per page summary + social links)
-  2. notarycafe_detailed_profiles.xlsx (Full deep profile data for each notary)
+Generates three structured Excel files:
+  1. notarycafe_city_stats.xlsx         (City summary: City, State, Total_Listings_Found, Total_Pages, Status)
+  2. notarycafe_listings_summary.xlsx   (10 listings per page summary + social links)
+  3. notarycafe_detailed_profiles.xlsx  (Full deep profile data for each notary across all sections)
 
 Supports:
-  - Starting from a specific city (e.g. Bloomington, IN) or reading the full list from cities-basic-v2025_structured.xlsx
-  - Automatic pagination through all 10-result pages per city
+  - Starting from a specific city or continuing sequentially from cities-basic-v2025_structured.xlsx
+  - Automatic multi-page pagination through ALL pages per city (Page 1, 2, 3...) until listings end
+  - Tracking 0 results for cities with no listings and exact listing/page counts for cities with listings
   - Opening each profile in a new tab, extracting all fields, closing tab, returning to results
-  - Extracting social media links (Facebook, LinkedIn, Twitter/X, Instagram, etc.)
+  - Extracting social media links (Facebook, LinkedIn, Twitter/X, Instagram, YouTube, TikTok, etc.)
   - Auto-resuming from progress.json
   - Visible Chrome browser with anti-detection flags for VPN / Cloudflare compatibility
 """
@@ -33,6 +35,7 @@ CITIES_EXCEL = BASE_DIR / "cities-basic-v2025_structured.xlsx"
 OUTPUT_DIR = BASE_DIR / "notarycafe_output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+CITY_STATS_EXCEL = OUTPUT_DIR / "notarycafe_city_stats.xlsx"
 SUMMARY_EXCEL = OUTPUT_DIR / "notarycafe_listings_summary.xlsx"
 DETAILED_EXCEL = OUTPUT_DIR / "notarycafe_detailed_profiles.xlsx"
 PROGRESS_FILE = OUTPUT_DIR / "progress.json"
@@ -48,7 +51,7 @@ SOCIAL_PATTERNS = {
 }
 
 def load_cities_from_excel(target_city=None, target_state=None):
-    """Load cities from Excel file. If target specified, starts from that city."""
+    """Load cities from Excel file. If target specified, moves that city to the front."""
     print(f"Loading cities from: {CITIES_EXCEL}")
     df = pd.read_excel(CITIES_EXCEL, sheet_name="All_Cities_Raw")
     cities = []
@@ -68,11 +71,10 @@ def load_cities_from_excel(target_city=None, target_state=None):
             
     print(f"Loaded {len(cities)} unique cities from file.")
     
-    if target_city and target_state:
-        # Move target city to the front
+    if target_city:
         target_idx = None
         for i, c in enumerate(cities):
-            if c["city"].lower() == target_city.lower() and c["state"].upper() == target_state.upper():
+            if c["city"].lower() == target_city.lower() and (not target_state or c["state"].upper() == target_state.upper()):
                 target_idx = i
                 break
         if target_idx is not None:
@@ -80,14 +82,14 @@ def load_cities_from_excel(target_city=None, target_state=None):
             cities.insert(0, match)
             print(f"Set starting city to: {match['city']}, {match['state']}")
         else:
-            cities.insert(0, {"city": target_city, "state": target_state, "population": 0})
-            print(f"Added starting city: {target_city}, {target_state}")
+            cities.insert(0, {"city": target_city, "state": target_state or "", "population": 0})
+            print(f"Added starting city: {target_city}, {target_state or ''}")
             
     return cities
 
 
 class NotaryCafeScraper:
-    def __init__(self, cities, start_city="Bloomington", start_state="IN", max_pages=None, single_city=False):
+    def __init__(self, cities, start_city=None, start_state=None, max_pages=None, single_city=False):
         self.cities = cities
         self.start_city = start_city
         self.start_state = start_state
@@ -95,12 +97,14 @@ class NotaryCafeScraper:
         self.single_city = single_city
         self.completed_cities = set()
         self.completed_profiles = set()
+        self.city_stats_records = []
         self.summary_records = []
         self.detailed_records = []
         self.load_existing_data()
 
     def load_existing_data(self):
-        """Loads existing Excel files and progress.json if present to prevent duplicates."""
+        """Loads existing Excel files and progress.json if present to prevent duplicates and maintain state."""
+        # 1. Load progress.json
         if PROGRESS_FILE.exists():
             try:
                 with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
@@ -111,6 +115,7 @@ class NotaryCafeScraper:
             except Exception as e:
                 print(f"Warning reading progress.json: {e}")
 
+        # 2. Load Listings Summary Excel
         if SUMMARY_EXCEL.exists():
             try:
                 df_sum = pd.read_excel(SUMMARY_EXCEL)
@@ -119,6 +124,7 @@ class NotaryCafeScraper:
             except Exception as e:
                 print(f"Warning reading existing summary excel: {e}")
 
+        # 3. Load Detailed Profiles Excel
         if DETAILED_EXCEL.exists():
             try:
                 df_det = pd.read_excel(DETAILED_EXCEL)
@@ -130,13 +136,58 @@ class NotaryCafeScraper:
             except Exception as e:
                 print(f"Warning reading existing detailed excel: {e}")
 
+        # 4. Load City Statistics Excel
+        if CITY_STATS_EXCEL.exists():
+            try:
+                df_stats = pd.read_excel(CITY_STATS_EXCEL)
+                self.city_stats_records = df_stats.to_dict("records")
+                print(f"Loaded {len(self.city_stats_records)} existing city stats records.")
+            except Exception as e:
+                print(f"Warning reading existing city stats excel: {e}")
+
+        # 5. Backfill previously completed cities into city_stats_records if missing
+        existing_stats_keys = {(str(r.get("City")).strip(), str(r.get("State")).strip()) for r in self.city_stats_records}
+        summary_city_counts = {}
+        summary_city_max_pages = {}
+        for r in self.summary_records:
+            c = str(r.get("City_Searched", "")).strip()
+            s = str(r.get("State_Searched", "")).strip()
+            pg = int(r.get("Page_Number", 1)) if pd.notna(r.get("Page_Number")) else 1
+            if c and s:
+                summary_city_counts[(c, s)] = summary_city_counts.get((c, s), 0) + 1
+                summary_city_max_pages[(c, s)] = max(summary_city_max_pages.get((c, s), 1), pg)
+
+        backfilled = 0
+        for c_key in self.completed_cities:
+            parts = c_key.split("_")
+            c_name = parts[0].strip()
+            s_name = parts[1].strip() if len(parts) > 1 else ""
+            if (c_name, s_name) not in existing_stats_keys:
+                cnt = summary_city_counts.get((c_name, s_name), 0)
+                max_pg = summary_city_max_pages.get((c_name, s_name), 1) if cnt > 0 else 0
+                self.city_stats_records.append({
+                    "City": c_name,
+                    "State": s_name,
+                    "Total_Listings_Found": cnt,
+                    "Total_Pages": max_pg,
+                    "Status": "Completed" if cnt > 0 else "No Results",
+                    "Scraped_At": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                })
+                existing_stats_keys.add((c_name, s_name))
+                backfilled += 1
+
+        if backfilled > 0:
+            print(f"Backfilled {backfilled} existing completed cities into city statistics report.")
+            self.save_data()
+
     def save_data(self):
-        """Saves current state safely to both Excel files and progress.json."""
+        """Saves current state safely to all three Excel files and progress.json."""
         # 1. Save progress.json first (lightweight, crash-safe)
         try:
             progress = {
                 "completed_cities": list(self.completed_cities),
                 "completed_profiles": list(self.completed_profiles),
+                "city_stats_count": len(self.city_stats_records),
                 "summary_count": len(self.summary_records),
                 "detailed_count": len(self.detailed_records),
                 "last_updated": datetime.now().isoformat()
@@ -146,7 +197,20 @@ class NotaryCafeScraper:
         except Exception as pe:
             print(f"Warning saving progress.json: {pe}")
 
-        # 2. Save Summary Excel (handle file lock if user has file open)
+        # 2. Save City Statistics Excel
+        try:
+            if self.city_stats_records:
+                df_stats = pd.DataFrame(self.city_stats_records)
+                df_stats.drop_duplicates(subset=["City", "State"], keep="last", inplace=True)
+                df_stats["Total_Listings_Found"] = pd.to_numeric(df_stats["Total_Listings_Found"], errors="coerce").fillna(0).astype(int)
+                df_stats["Total_Pages"] = pd.to_numeric(df_stats["Total_Pages"], errors="coerce").fillna(0).astype(int)
+                df_stats.to_excel(CITY_STATS_EXCEL, index=False)
+        except PermissionError:
+            print(f"Notice: {CITY_STATS_EXCEL.name} is currently open in Excel. Skipping write this turn (data safe in memory).")
+        except Exception as ste:
+            print(f"Warning saving city stats excel: {ste}")
+
+        # 3. Save Summary Excel (handle file lock if user has file open)
         try:
             if self.summary_records:
                 df_s = pd.DataFrame(self.summary_records)
@@ -157,7 +221,7 @@ class NotaryCafeScraper:
         except Exception as se:
             print(f"Warning saving summary excel: {se}")
 
-        # 3. Save Detailed Profiles Excel (cast object types to avoid LossySetitemError)
+        # 4. Save Detailed Profiles Excel (cast object types to avoid LossySetitemError)
         try:
             if self.detailed_records:
                 df_d = pd.DataFrame(self.detailed_records)
@@ -236,12 +300,16 @@ class NotaryCafeScraper:
         return False
 
     async def parse_search_listings(self, page, city, state, page_num):
-        """Parses the 10 listing cards visible on the search results page."""
+        """Parses the listing cards visible on the search results page."""
         listings = []
         
-        # Check for no results
+        # Check for no results indicators
         body_text = await page.inner_text("body")
-        no_res_indicators = ["no results", "0 results", "no notaries found", "no matches found"]
+        no_res_indicators = [
+            "no results", "0 results", "no notaries found", 
+            "no matches found", "0 listings", "nothing found", 
+            "no notaries in"
+        ]
         if any(ind in body_text.lower() for ind in no_res_indicators):
             print(f"No notaries found for {city}, {state}.")
             return []
@@ -257,6 +325,9 @@ class NotaryCafeScraper:
                 if "view profile" in txt.lower():
                     view_profile_links.append(l)
                     
+        if not view_profile_links:
+            return []
+
         print(f"Found {len(view_profile_links)} listings on Page {page_num}.")
         
         for idx, link_el in enumerate(view_profile_links, start=1):
@@ -448,123 +519,93 @@ class NotaryCafeScraper:
             # 4. Name & Company
             company_name = summary_info.get("Company_Name", "")
             m_comp = re.search(r'Company Name:\s*([^\n]+)', page_text, re.IGNORECASE)
-            if m_comp: company_name = m_comp.group(1).strip()
+            if m_comp and not company_name: company_name = m_comp.group(1).strip()
             
             in_business_since = ""
-            m_since = re.search(r'In Business Since:\s*([^\n]+)', page_text, re.IGNORECASE)
-            if m_since: in_business_since = m_since.group(1).strip()
+            m_bus = re.search(r'In Business Since:\s*([^\n]+)', page_text, re.IGNORECASE)
+            if m_bus: in_business_since = m_bus.group(1).strip()
             
             # 5. Billing Address
-            b_preferred = "Yes" if "Billing" in page_text and "Preferred" in page_text else ""
+            b_preferred = "Yes" if "Preferred" in page_text else ""
             b_addr1 = ""
             b_addr2 = ""
-            b_city = ""
-            b_state = ""
-            b_zip = ""
+            b_city = summary_info.get("City", "")
+            b_state = summary_info.get("State", "")
+            b_zip = summary_info.get("Zip_Code", "")
             
-            m_b_addr1 = re.search(r'Address 1:\s*([^\n]+)', page_text)
-            if m_b_addr1: b_addr1 = m_b_addr1.group(1).strip()
-            
-            m_b_addr2 = re.search(r'Address 2:\s*([^\n]+)', page_text)
-            if m_b_addr2: b_addr2 = m_b_addr2.group(1).strip()
-            
-            m_b_city = re.search(r'City:\s*([^\n]+)', page_text)
-            if m_b_city: b_city = m_b_city.group(1).strip()
-            
-            m_b_state = re.search(r'State:\s*([A-Za-z]{2})', page_text)
-            if m_b_state: b_state = m_b_state.group(1).strip()
-            
-            m_b_zip = re.search(r'Zip:\s*(\d{5}(?:-\d{4})?)', page_text)
-            if m_b_zip: b_zip = m_b_zip.group(1).strip()
-            
+            m_b_addr = re.search(r'Billing\s*\n+(?:Preferred:?\s*\w+\s*\n+)?([0-9]+[^\n]+)\n+([A-Za-z\s]+),\s*([A-Z]{2})\s*(\d{5})', page_text)
+            if m_b_addr:
+                b_addr1 = m_b_addr.group(1).strip()
+                b_city = m_b_addr.group(2).strip()
+                b_state = m_b_addr.group(3).strip()
+                b_zip = m_b_addr.group(4).strip()
+                
             # 6. Shipping Address
-            s_same = "Yes" if "Same as Billing" in page_text else "No"
+            s_same = "Yes" if "Same as Billing" in page_text else ""
             
-            # 7. Phone Numbers (Work, Mobile, Home)
+            # 7. Phone Numbers
             p_work = summary_info.get("Phone", "")
             p_mobile = ""
             p_home = ""
-            p_pref = ""
-            p_text_enabled = "Yes" if "text enabled" in page_text.lower() or "text" in page_text.lower() else ""
+            p_text_enabled = "Yes" if "text enabled" in page_text.lower() else "No"
             
-            m_p_work = re.search(r'Work:\s*(\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})', page_text, re.IGNORECASE)
-            if m_p_work: p_work = m_p_work.group(1).strip()
+            m_work_ph = re.search(r'Work:\s*([0-9\(\)\-\.\s]+)', page_text)
+            if m_work_ph: p_work = m_work_ph.group(1).strip()
             
-            m_p_mob = re.search(r'Mobile:\s*(\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})', page_text, re.IGNORECASE)
-            if m_p_mob: p_mobile = m_p_mob.group(1).strip()
+            m_mob_ph = re.search(r'Mobile:\s*([0-9\(\)\-\.\s]+)', page_text)
+            if m_mob_ph: p_mobile = m_mob_ph.group(1).strip()
             
-            m_p_home = re.search(r'Home:\s*(\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})', page_text, re.IGNORECASE)
-            if m_p_home: p_home = m_p_home.group(1).strip()
+            m_hm_ph = re.search(r'Home:\s*([0-9\(\)\-\.\s]+)', page_text)
+            if m_hm_ph: p_home = m_hm_ph.group(1).strip()
             
-            if not p_work and not p_mobile:
-                all_phones = re.findall(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', page_text)
-                if all_phones: p_work = all_phones[0]
-                
-            # 8. Email Addresses (Work, Personal)
+            # 8. Email Addresses
             e_work = summary_info.get("Email", "")
             e_personal = ""
             
-            m_e_work = re.search(r'Work\s+([\w\.-]+@[\w\.-]+\.\w+)', page_text)
-            if m_e_work: e_work = m_e_work.group(1).strip()
-            
-            m_e_pers = re.search(r'Personal\s+([\w\.-]+@[\w\.-]+\.\w+)', page_text)
-            if m_e_pers: e_personal = m_e_pers.group(1).strip()
-            
-            if not e_work:
-                all_emails = re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', page_text)
-                # Filter out system emails
-                clean_emails = [e for e in all_emails if "notarycafe" not in e.lower() and "bixagency" not in e.lower()]
-                if clean_emails: e_work = clean_emails[0]
-                
+            m_em_all = re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', page_text)
+            clean_emails = [e for e in m_em_all if "notarycafe" not in e.lower()]
+            if clean_emails:
+                e_work = clean_emails[0]
+                if len(clean_emails) > 1:
+                    e_personal = clean_emails[1]
+                    
             # 9. Pricing Information
-            pricing_items = []
-            pricing_regex = re.findall(r'(\d+\.\s*[^\n\$]+)\s*(\$\d+(?:\.\d{2})?)', page_text)
-            for desc, amt in pricing_regex:
-                pricing_items.append(f"{desc.strip()}: {amt.strip()}")
-            pricing_all_str = " | ".join(pricing_items)
-            
-            pricing_notes = ""
-            m_pnotes = re.search(r'Other Pricing Notes\s*\n+([^\n]+)', page_text, re.IGNORECASE)
-            if m_pnotes: pricing_notes = m_pnotes.group(1).strip()
-            
-            # Specific common pricing slots
             price_purchase = ""
             price_seller = ""
             price_modification = ""
             price_heloc = ""
             price_reverse = ""
-            for item in pricing_items:
-                i_low = item.lower()
-                if "purchase" in i_low or "refi" in i_low: price_purchase = item
-                elif "seller" in i_low: price_seller = item
-                elif "modification" in i_low: price_modification = item
-                elif "heloc" in i_low or "equity" in i_low: price_heloc = item
-                elif "reverse" in i_low: price_reverse = item
-
+            pricing_notes = ""
+            
+            m_p1 = re.search(r'Purchase or refi[^\$]*(\$[\d\.]+)', page_text, re.IGNORECASE)
+            if m_p1: price_purchase = m_p1.group(1).strip()
+            
+            m_p2 = re.search(r'Seller pkg[^\$]*(\$[\d\.]+)', page_text, re.IGNORECASE)
+            if m_p2: price_seller = m_p2.group(1).strip()
+            
+            m_p3 = re.search(r'Modification[^\$]*(\$[\d\.]+)', page_text, re.IGNORECASE)
+            if m_p3: price_modification = m_p3.group(1).strip()
+            
+            m_p4 = re.search(r'Home equity lines[^\$]*(\$[\d\.]+)', page_text, re.IGNORECASE)
+            if m_p4: price_heloc = m_p4.group(1).strip()
+            
+            m_p5 = re.search(r'Reverse mortgage[^\$]*(\$[\d\.]+)', page_text, re.IGNORECASE)
+            if m_p5: price_reverse = m_p5.group(1).strip()
+            
+            pricing_matches = re.findall(r'(\d+\.\s*[^\$\n]+:\s*\$[\d\.]+)', page_text)
+            pricing_all_str = "; ".join(pricing_matches) if pricing_matches else ""
+            
             # 10. Custom Fields
-            custom_fields = []
-            m_cfields = re.findall(r'(?:Custom Field \d+:|Custom:\s*)([^\n]+)', page_text, re.IGNORECASE)
-            for cf in m_cfields:
-                custom_fields.append(cf.strip())
-            custom_fields_str = " | ".join(custom_fields)
+            custom_matches = re.findall(r'Custom Field \d+:\s*([^\n]+)', page_text, re.IGNORECASE)
+            custom_fields_str = "; ".join(custom_matches) if custom_matches else ""
             
             # 11. State Licenses
-            licenses = []
-            lic_matches = re.findall(r'([A-Z]{2})\s+([A-Za-z0-9#\-]+)\s+(\d{1,2}/\d{1,2}/\d{4})', page_text)
-            for st, comm, exp in lic_matches:
-                licenses.append(f"{st} #{comm} (Exp: {exp})")
-            licenses_str = " | ".join(licenses) if licenses else ""
-            if not licenses_str:
-                m_lic_text = re.findall(r'(?:License|Commission)\s*#?([A-Za-z0-9\-]+)', page_text, re.IGNORECASE)
-                if m_lic_text: licenses_str = ", ".join(m_lic_text)
-                
+            licenses = re.findall(r'([A-Z]{2}\s*License\s*#?\d*:[^\n]+)', page_text, re.IGNORECASE)
+            licenses_str = "; ".join(licenses) if licenses else ""
+            
             # 12. Insurances
-            insurances = []
-            m_ins = re.findall(r'([A-Za-z0-9\.\s]+(?:USD|\$|Bonding|Insurance)[^\n]*)', page_text)
-            for ins in m_ins:
-                if len(ins.strip()) < 80 and any(w in ins.lower() for w in ["usd", "$", "merchants", "biberk", "insurance"]):
-                    insurances.append(ins.strip())
-            insurances_str = " | ".join(insurances)
+            insurances = re.findall(r'(?:Carrier and Amount|Insurance|Bonding):\s*([^\n]+)', page_text, re.IGNORECASE)
+            insurances_str = "; ".join(insurances) if insurances else ""
             
             # 13. Background Checks
             bg_provider = ""
@@ -572,31 +613,31 @@ class NotaryCafeScraper:
             bg_expiration = ""
             bg_ref = ""
             
-            m_bg_p = re.search(r'Provider\s*\n+([A-Za-z\s]+)', page_text)
-            if m_bg_p: bg_provider = m_bg_p.group(1).strip()
+            m_bg_prov = re.search(r'Provider:\s*([^\n]+)', page_text, re.IGNORECASE)
+            if m_bg_prov: bg_provider = m_bg_prov.group(1).strip()
             
-            m_bg_c = re.search(r'Conducted\s*\n+(\d{1,2}/\d{1,2}/\d{4})', page_text)
-            if m_bg_c: bg_conducted = m_bg_c.group(1).strip()
+            m_bg_cond = re.search(r'Conducted:\s*([^\n]+)', page_text, re.IGNORECASE)
+            if m_bg_cond: bg_conducted = m_bg_cond.group(1).strip()
             
-            m_bg_e = re.search(r'Expiration\s*\n+(\d{1,2}/\d{1,2}/\d{4})', page_text)
-            if m_bg_e: bg_expiration = m_bg_e.group(1).strip()
+            m_bg_exp = re.search(r'Expiration:\s*([^\n]+)', page_text, re.IGNORECASE)
+            if m_bg_exp: bg_expiration = m_bg_exp.group(1).strip()
             
-            m_bg_r = re.search(r'Ref\.\s*#\s*\n+([A-Za-z0-9\-]+)', page_text)
-            if m_bg_r: bg_ref = m_bg_r.group(1).strip()
+            m_bg_ref = re.search(r'Ref\.?\s*#:\s*([^\n]+)', page_text, re.IGNORECASE)
+            if m_bg_ref: bg_ref = m_bg_ref.group(1).strip()
             
             # 14. Capabilities
             capabilities_list = [
                 "CSA", "Attorney", "Fax", "Email", "Internet", "Laser Printer", 
                 "Abstractor", "Mobile Hotspot", "E-Sign", "24 Hour Service", 
                 "Fingerprinting", "Weddings", "Hospital Signing", "Jail Signings", 
-                "EscrowTab (IPEN)", "RON Capable"
+                "EscrowTab", "IPEN", "RON Capable"
             ]
-            active_caps = [c for c in capabilities_list if c.lower() in page_text.lower()]
-            capabilities_str = ", ".join(active_caps)
+            found_caps = [c for c in capabilities_list if c.lower() in page_text.lower()]
+            capabilities_str = ", ".join(found_caps)
             
             other_caps = ""
-            m_ocaps = re.search(r'Other Capability Information\s*\n+([^\n]+)', page_text, re.IGNORECASE)
-            if m_ocaps: other_caps = m_ocaps.group(1).strip()
+            m_caps = re.search(r'Capabilities\s*\n+([^\n]+(?:\n+[^\n]+){0,2})', page_text)
+            if m_caps: other_caps = m_caps.group(1).strip()
             
             # 15. Availability
             days_list = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -740,8 +781,9 @@ class NotaryCafeScraper:
     async def run(self):
         print("\n" + "=" * 60)
         print("Starting NotaryCafe Scraper...")
-        print(f"Target Excel 1: {SUMMARY_EXCEL}")
-        print(f"Target Excel 2: {DETAILED_EXCEL}")
+        print(f"Target Excel 1 (City Stats):     {CITY_STATS_EXCEL}")
+        print(f"Target Excel 2 (Summary Cards):  {SUMMARY_EXCEL}")
+        print(f"Target Excel 3 (Full Profiles):  {DETAILED_EXCEL}")
         print("=" * 60)
         
         async with async_playwright() as p:
@@ -796,78 +838,139 @@ class NotaryCafeScraper:
                     # 1. Search for city
                     searched = await self.search_city(search_page, city, state)
                     if not searched:
-                        print(f"Failed to submit search for {city}, {state}. Continuing.")
+                        print(f"Failed to submit search for {city}, {state}. Recording status...")
+                        self.city_stats_records.append({
+                            "City": city,
+                            "State": state,
+                            "Total_Listings_Found": 0,
+                            "Total_Pages": 0,
+                            "Status": "Search Failed",
+                            "Scraped_At": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        })
+                        self.save_data()
                         continue
                         
                     current_page = 1
+                    city_listings_count = 0
+                    
+                    # 2. Multi-page pagination loop (scrapes ALL pages until no more pages)
                     while True:
                         print(f"\n--- [City: {city}, {state}] Processing Page {current_page} ---")
                         
-                        # 2. Extract listings on this page (10 listings)
                         listings = await self.parse_search_listings(search_page, city, state, current_page)
+                        
                         if not listings:
-                            print(f"No more listings on page {current_page} for {city}, {state}.")
+                            if current_page == 1:
+                                print(f"Zero listings found for {city}, {state}. Recording in City Stats...")
+                                self.city_stats_records.append({
+                                    "City": city,
+                                    "State": state,
+                                    "Total_Listings_Found": 0,
+                                    "Total_Pages": 0,
+                                    "Status": "No Results",
+                                    "Scraped_At": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                })
+                                self.completed_cities.add(city_key)
+                                self.save_data()
+                            else:
+                                print(f"No further listings found on page {current_page}. Pagination complete for {city}, {state}.")
                             break
                             
-                        # 3. For each listing, extract summary & full profile
+                        # Process listings on current page
+                        print(f"Scraping {len(listings)} listings on Page {current_page}...")
                         for l_idx, summary_item in enumerate(listings, start=1):
                             prof_url = summary_item["Profile_URL"]
                             print(f"  [{l_idx}/{len(listings)}] {summary_item['Name']} ({prof_url})")
                             
-                            # Add to summary records
                             self.summary_records.append(summary_item)
                             
-                            # Scrape full detail profile in new tab
                             if prof_url not in self.completed_profiles:
                                 detail_record = await self.scrape_detail_page(context, prof_url, summary_item)
                                 if detail_record:
                                     self.detailed_records.append(detail_record)
                                     self.completed_profiles.add(prof_url)
                             else:
-                                print(f"    (Profile already in database, skipping deep crawl)")
+                                print("    (Profile already in database, skipping deep crawl)")
                                 
-                            # Save after each listing
                             self.save_data()
                             await self.human_delay(1.0, 2.5)
                             
-                        # 4. Check for Next Page button
-                        # Detect total pages indicator: e.g. "Page 1 of 7 • 70 results"
-                        body_txt = await search_page.inner_text("body")
-                        page_match = re.search(r'Page\s+(\d+)\s+of\s+(\d+)', body_txt, re.IGNORECASE)
-                        total_pages = int(page_match.group(2)) if page_match else 1
+                        city_listings_count += len(listings)
                         
-                        print(f"City {city}: Page {current_page} of {total_pages} complete.")
-                        
-                        if current_page >= total_pages or (self.max_pages and current_page >= self.max_pages):
-                            print(f"Reached page limit ({current_page}/{total_pages}) for {city}, {state}.")
+                        # Check user page limit if specified
+                        if self.max_pages and current_page >= self.max_pages:
+                            print(f"Reached max_pages limit ({self.max_pages}) for {city}, {state}.")
                             break
                             
-                        # Click Next button
-                        next_btn = await search_page.query_selector('a:has-text("Next"), button:has-text("Next"), .pagination .next a')
+                        # Detect and click NEXT page button
+                        next_selectors = [
+                            'a:has-text("Next")',
+                            'button:has-text("Next")',
+                            'a[rel="next"]',
+                            '.pagination .next a',
+                            '.pager .next a',
+                            'li.next:not(.disabled) a',
+                            'a[aria-label*="Next" i]',
+                            f'.pagination a:has-text("{current_page + 1}")',
+                            f'nav a:has-text("{current_page + 1}")',
+                            f'a:has-text("{current_page + 1}")'
+                        ]
+                        
+                        next_btn = None
+                        for sel in next_selectors:
+                            try:
+                                candidate = await search_page.query_selector(sel)
+                                if candidate and await candidate.is_visible():
+                                    is_disabled = await candidate.evaluate(
+                                        'el => el.classList.contains("disabled") || el.getAttribute("aria-disabled") === "true" || el.hasAttribute("disabled") || el.closest(".disabled") !== null'
+                                    )
+                                    if not is_disabled:
+                                        next_btn = candidate
+                                        break
+                            except Exception:
+                                pass
+                                
                         if not next_btn:
-                            # Try generic search for Next
-                            all_a = await search_page.query_selector_all('a')
-                            for a in all_a:
-                                txt = (await a.inner_text()).strip().lower()
-                                if txt == "next":
-                                    next_btn = a
-                                    break
-                                    
-                        if next_btn and await next_btn.is_visible():
-                            print("Clicking 'Next' page button...")
-                            await next_btn.click()
-                            await search_page.wait_for_load_state("domcontentloaded", timeout=45000)
-                            await self.human_delay(3.0, 5.0)
-                            current_page += 1
-                        else:
-                            print("Could not find visible 'Next' button. Moving to next city.")
+                            print(f"No Next page button or next page link found. Finished all pages for {city}, {state}.")
                             break
                             
-                    # City finished!
-                    self.completed_cities.add(city_key)
-                    self.save_data()
-                    print(f"Successfully finished all listings for city: {city}, {state}!")
-                    
+                        print(f"Navigating to Page {current_page + 1} for {city}, {state}...")
+                        try:
+                            prev_first_url = listings[0].get("Profile_URL") if listings else None
+                            await next_btn.click()
+                            try:
+                                await search_page.wait_for_load_state("domcontentloaded", timeout=30000)
+                            except Exception:
+                                pass
+                            await self.human_delay(3.0, 5.0)
+                            
+                            # Verify if new page loaded
+                            new_cards = await search_page.query_selector_all('a:has-text("View Profile")')
+                            if new_cards:
+                                new_url = await new_cards[0].get_attribute("href")
+                                if new_url and prev_first_url and new_url in prev_first_url:
+                                    print("Waiting additional time for page change...")
+                                    await self.human_delay(2.0, 4.0)
+                                    
+                            current_page += 1
+                        except Exception as n_err:
+                            print(f"Error navigating to next page: {n_err}")
+                            break
+                            
+                    # City complete with results!
+                    if city_listings_count > 0:
+                        self.city_stats_records.append({
+                            "City": city,
+                            "State": state,
+                            "Total_Listings_Found": city_listings_count,
+                            "Total_Pages": current_page,
+                            "Status": "Completed",
+                            "Scraped_At": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        })
+                        self.completed_cities.add(city_key)
+                        self.save_data()
+                        print(f"Successfully finished all listings for city: {city}, {state}! Total: {city_listings_count} listings across {current_page} pages.")
+                        
                     if self.single_city:
                         print(f"Single city mode requested. Finished {city}, {state}.")
                         break
@@ -878,20 +981,21 @@ class NotaryCafeScraper:
                 self.save_data()
                 await browser.close()
                 print("\nBrowser closed. Scraping session finished.")
-                print(f"Total Summary Listings Saved: {len(self.summary_records)}")
+                print(f"Total City Stats Records:      {len(self.city_stats_records)}")
+                print(f"Total Summary Listings Saved:  {len(self.summary_records)}")
                 print(f"Total Detailed Profiles Saved: {len(self.detailed_records)}")
 
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="NotaryCafe Scraper")
-    parser.add_argument("--city", default="Bloomington", help="Starting city name (default: Bloomington)")
-    parser.add_argument("--state", default="IN", help="Starting state abbreviation (default: IN)")
+    parser = argparse.ArgumentParser(description="NotaryCafe Automated Directory Scraper")
+    parser.add_argument("--city", default=None, help="Starting city name (e.g. Bloomington). If omitted, resumes sequentially.")
+    parser.add_argument("--state", default=None, help="Starting state abbreviation (e.g. IN).")
     parser.add_argument("--max-pages", type=int, default=None, help="Maximum pages to scrape per city (e.g. 1 for quick test)")
     parser.add_argument("--single-city", action="store_true", help="Scrape only the specified city then stop")
     args = parser.parse_args()
 
-    print(f"Scraper target: {args.city}, {args.state} | Single city: {args.single_city} | Max pages: {args.max_pages}")
+    print(f"Scraper target: {args.city or 'Auto-Resume (Sequential)'}, {args.state or 'Auto'} | Single city: {args.single_city} | Max pages: {args.max_pages}")
     cities_list = load_cities_from_excel(target_city=args.city, target_state=args.state)
     scraper = NotaryCafeScraper(
         cities_list, 
