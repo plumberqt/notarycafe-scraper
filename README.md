@@ -6,14 +6,21 @@ A production-grade, highly resilient web scraper for extracting notary public li
 
 ## 🚀 Key Features
 
+- **State-by-State Grouped Scraping**: Scrapes all cities of a state before transitioning to the next state (e.g. `Alabama` cities -> `Alaska` cities -> `Arizona` cities ... -> `Wyoming` cities).
+- **Exact Search Format (`State Name, City Name`)**: Directly queries `"State Name, City Name"` (e.g. `Alabama, Abbeville`) into the NotaryCafe search bar.
+- **Triple-Level Deduplication**:
+  1. *Result Card Level*: Ignores duplicate cards on the same search page.
+  2. *City Search Level*: Filters repeat notaries across pagination pages of the same search.
+  3. *Global Database Level*: Recognizes already crawled profiles to avoid redundant deep tab crawls and duplicate rows.
+- **Full Multi-Page Traversal**: For cities with high density (>10 listings across Page 1, Page 2, Page 3, etc.), the scraper automatically paginates through all pages until every single listing is scraped.
 - **Triple Excel Outputs**:
-  - `notarycafe_city_stats.xlsx`: **City Summary & Statistics Report** — Tracks every searched city with `City`, `State`, `Total_Listings_Found` (0 if no notaries found, exact count if found), `Total_Pages`, `Status` (`Completed`, `No Results`, `Search Failed`), and timestamp. Ideal for high-level analytics, verification, and reporting.
+  - `notarycafe_city_stats.xlsx`: **City Summary & Statistics Report** — Tracks every searched city with `State`, `City`, `Search_Query`, `Total_Listings_Found` (0 if no notaries found, exact count if found), `Total_Pages`, `Status` (`Completed`, `No Results`, `Search Failed`), and timestamp. Ideal for high-level analytics, verification, and reporting.
   - `notarycafe_listings_summary.xlsx`: Quick search results table (10 listings per page) with direct contact info and social media links.
   - `notarycafe_detailed_profiles.xlsx`: Deep profile crawl with all 18 structured sections (Bio, Billing/Shipping, Pricing items, State Licenses, Insurances, Background Checks, Capabilities, Availability, Languages, Social Links).
-- **Full Multi-Page Traversal**: For cities with high density (>10 listings across Page 1, Page 2, Page 3, etc.), the scraper automatically paginates through all pages until every single listing is scraped.
 - **Social Media Extraction**: Automatically parses profile links for Facebook, LinkedIn, Twitter/X, Instagram, YouTube, TikTok, etc.
-- **Smart City Search**: Searches directly by City Name to ensure complete listing coverage.
-- **Auto-Resume & State Tracking**: Real-time checkpoint tracking in `progress.json` ensures zero duplicated work across restarts.
+- **Interactive Startup Menu**:
+  - Option `1`: **Fresh Start** — Safely backs up existing output files to a timestamped folder, resets active tables, and begins scraping from State #1 (`Alabama`).
+  - Option `2`: **Resume** — Checks existing files and `progress.json`, skips completed cities, and seamlessly continues.
 - **Resilient & Anti-Detection**:
   - Launches real Chrome with automation flags disabled (`--disable-blink-features=AutomationControlled`).
   - Automatic retry on network/VPN lag without crashing.
@@ -64,15 +71,16 @@ Double-click:
 ```
 start_notary_scraper.bat
 ```
-Jab aap launcher open karenge, terminal screen par aapse puchhega:
+Jab aap launcher open karenge, terminal screen par execution menu aayega:
 ```
 ======================================================================
              NOTARYCAFE SCRAPER - EXECUTION MENU
 ======================================================================
-  [1] Fresh Start (Shuru se start karein - Nayi Excel files + Alphabet A to Z)
+  [1] Fresh Start (Shuru se start karein - Nayi Excel files)
+      -> Search format: 'State Name, City Name' (e.g. Alabama, Abbeville)
+      -> State-by-State (Alabama -> Alaska -> Arizona -> ... -> Wyoming)
       -> Purani files ka safe backup ban jayega (notarycafe_output/backup_...)
       -> Teeno brand new empty Excel files banengi
-      -> Alphabet 'A' se 'Z' tak complete start hoga
 
   [2] Resume (Jaha pichli baar chhoda tha wahi se continue karein)
       -> Existing Excel files aur progress.json read karega
@@ -86,21 +94,17 @@ Aapka chunav [1 ya 2, Default: 2]:
 # Interactive mode (puchhega 1: Fresh Start ya 2: Resume):
 python scrape_notarycafe_complete.py
 
-# Direct Fresh Start (Alphabet A to Z se shuru karein aur purana data backup karein):
+# Direct Fresh Start (Purana data backup karein aur State-by-State A to Z shuru karein):
 python scrape_notarycafe_complete.py --fresh
 
 # Direct Resume (Bina puchhe jaha chhoda tha wahi se continue karein):
 python scrape_notarycafe_complete.py --resume
 
-# Test a single city (e.g. Bloomington, IN):
-python scrape_notarycafe_complete.py --city "Bloomington" --state "IN" --single-city
-```
+# Start from a specific state (e.g. California):
+python scrape_notarycafe_complete.py --state "California"
 
-# Test with a maximum page limit per city (e.g. 1 page):
-python scrape_notarycafe_complete.py --city "Bloomington" --state "IN" --single-city --max-pages 1
-
-# Resume from a specific city:
-python scrape_notarycafe_complete.py --city "Florala" --state "AL"
+# Test a single city (e.g. Abbeville, Alabama):
+python scrape_notarycafe_complete.py --state "Alabama" --city "Abbeville" --single-city
 ```
 
 ---
@@ -110,15 +114,16 @@ python scrape_notarycafe_complete.py --city "Florala" --state "AL"
 ### 1. City Statistics File (`notarycafe_city_stats.xlsx`)
 | Column | Description |
 |---|---|
+| `State` | Full state name (e.g. `Alabama`, `California`) |
 | `City` | Name of city searched |
-| `State` | State abbreviation (e.g. `AL`, `IN`) |
-| `Total_Listings_Found` | Exact count of listings found (0 if no results) |
+| `Search_Query` | Exact search query submitted (e.g. `Alabama, Abbeville`) |
+| `Total_Listings_Found` | Exact count of unique listings found (0 if no results) |
 | `Total_Pages` | Total pages scraped (0 if no results) |
 | `Status` | `Completed` (listings scraped), `No Results` (0 found), or `Search Failed` |
 | `Scraped_At` | Timestamp of completion |
 
 ### 2. Summary File (`notarycafe_listings_summary.xlsx`)
-- `City_Searched`, `State_Searched`, `Page_Number`, `Position_on_Page`
+- `Search_Query`, `State_Searched`, `City_Searched`, `Page_Number`, `Position_on_Page`
 - `Name`, `Company_Name`, `City`, `State`, `Zip_Code`
 - `Phone`, `Email`, `Profile_URL`
 - `Facebook_URL`, `LinkedIn_URL`, `Twitter_X_URL`, `Instagram_URL`, `Other_Social_Links`
@@ -134,4 +139,4 @@ python scrape_notarycafe_complete.py --city "Florala" --state "AL"
 - **Credentials**: `Custom_Fields`, `State_Licenses`, `Insurances`, `Background_Provider`, `Background_Conducted`, `Background_Expiration`, `Background_Ref_Number`
 - **Capabilities & Hours**: `Capabilities`, `Other_Capability_Info`, `Available_Days`, `Available_Times`, `Other_Availability_Notes`, `Spoken_Languages`
 - **Social Media & Links**: `Website_URL`, `Facebook_URL`, `LinkedIn_URL`, `Twitter_X_URL`, `Instagram_URL`, `Other_Social_Links`, `Document_Links`
-- **Audit Metadata**: `City_Searched`, `State_Searched`, `Page_Number`, `Position_on_Page`, `Scraped_At`
+- **Audit Metadata**: `Search_Query`, `State_Searched`, `City_Searched`, `Page_Number`, `Position_on_Page`, `Scraped_At`
