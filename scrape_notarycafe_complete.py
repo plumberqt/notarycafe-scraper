@@ -3,20 +3,20 @@ NotaryCafe Complete Automated Scraper
 ====================================
 Scrapes notary listings and detailed profiles from https://notarycafe.com/
 Generates three structured Excel files:
-  1. notarycafe_city_stats.xlsx         (City summary: State, City, Search_Query, Total_Listings_Found, Total_Pages, Status)
+  1. notarycafe_city_stats.xlsx         (City summary: City, State, Search_Query, Total_Listings_Found, Total_Pages, Status)
   2. notarycafe_listings_summary.xlsx   (All listings summary + contact + social links)
   3. notarycafe_detailed_profiles.xlsx  (Full deep profile data for each notary across all 18 sections)
 
 Workflow:
-  - Search Query: Types "State Name, City Name" into search box (e.g. "Alabama, Abbeville")
-  - State-by-State Grouping: Stays on a state until all its cities are scraped, then moves to next state
+  - Search Query: Types City name only into search box (e.g. "Abbeville", "Bloomington")
+  - City-wise Traversal: Scrapes cities alphabetically (A to Z) from master dataset
   - Multi-Page Pagination: Traverses Page 1, Page 2, Page 3... until all listings in that city are scraped
   - 3-Level Deduplication:
       1. Result Card Level: Filters identical cards on the same search page
       2. City Search Level: Filters repeat notaries across pagination pages of the same search
       3. Global Database Level: Recognizes already crawled profiles to avoid redundant tab crawls and duplicate rows
   - Interactive Startup Menu:
-      [1] Fresh Start (Safe backup of old files, clean reset, starts State A to Z)
+      [1] Fresh Start (Safe backup of old files, clean reset, starts City A to Z)
       [2] Resume (Inspects existing files/progress.json, skips completed cities, continues next)
   - Stealth Chrome Launch: Anti-detection flags for VPN / Cloudflare compatibility
 """
@@ -111,8 +111,8 @@ def prompt_user_mode():
     print("             NOTARYCAFE SCRAPER - EXECUTION MENU")
     print("=" * 70)
     print("  [1] Fresh Start (Shuru se start karein - Nayi Excel files)")
-    print("      -> Search format: 'State Name, City Name' (e.g. Alabama, Abbeville)")
-    print("      -> State-by-State (Alabama -> Alaska -> Arizona -> ... -> Wyoming)")
+    print("      -> Search format: City name only (e.g. 'Abbeville', 'Bloomington')")
+    print("      -> City-wise A to Z order (Abbeville -> Boston -> ... -> Zwolle)")
     print("      -> Purani files ka safe backup ban jayega (notarycafe_output/backup_...)")
     print("      -> Teeno brand new empty Excel files banengi")
     print()
@@ -133,22 +133,22 @@ def prompt_user_mode():
         return "resume"
 
 
-def load_cities_from_excel(target_city=None, target_state=None, sort_by="state"):
+def load_cities_from_excel(target_city=None, target_state=None, sort_by="city"):
     """Load cities from Excel file.
-    Default sort_by == 'state' groups by State (A-Z) and City (A-Z):
-    State 1: Alabama (Abbeville -> Adamsville -> ...), State 2: Alaska...
+    Default sort_by == 'city' sorts alphabetically by City name (A-Z).
+    If sort_by == 'state', groups by State (A-Z) and City (A-Z).
     """
     print(f"Loading cities from: {CITIES_EXCEL}")
     df = pd.read_excel(CITIES_EXCEL, sheet_name="All_Cities_Raw")
     
-    if sort_by == "state":
-        df = df.sort_values(
-            by=["State", "City"],
-            key=lambda col: col.str.lower()
-        )
-    elif sort_by == "city":
+    if sort_by == "city":
         df = df.sort_values(
             by=["City", "State"],
+            key=lambda col: col.str.lower()
+        )
+    elif sort_by == "state":
+        df = df.sort_values(
+            by=["State", "City"],
             key=lambda col: col.str.lower()
         )
         
@@ -169,7 +169,7 @@ def load_cities_from_excel(target_city=None, target_state=None, sort_by="state")
     print(f"Loaded {len(cities)} unique cities from file (Grouping: {sort_by.upper()}-wise).")
     
     # If target specified, prioritize that state/city
-    if target_state and target_city:
+    if target_city and target_state:
         target_idx = None
         for i, c in enumerate(cities):
             if c["city"].lower() == target_city.lower() and c["state"].lower() == target_state.lower():
@@ -178,12 +178,7 @@ def load_cities_from_excel(target_city=None, target_state=None, sort_by="state")
         if target_idx is not None:
             match = cities.pop(target_idx)
             cities.insert(0, match)
-            print(f"Set starting city to: {match['state']}, {match['city']}")
-    elif target_state:
-        state_cities = [c for c in cities if c["state"].lower() == target_state.lower()]
-        other_cities = [c for c in cities if c["state"].lower() != target_state.lower()]
-        cities = state_cities + other_cities
-        print(f"Prioritized state: {target_state} ({len(state_cities)} cities).")
+            print(f"Set starting city to: {match['city']}, {match['state']}")
     elif target_city:
         target_idx = None
         for i, c in enumerate(cities):
@@ -193,7 +188,12 @@ def load_cities_from_excel(target_city=None, target_state=None, sort_by="state")
         if target_idx is not None:
             match = cities.pop(target_idx)
             cities.insert(0, match)
-            print(f"Set starting city to: {match['state']}, {match['city']}")
+            print(f"Set starting city to: {match['city']}, {match['state']}")
+    elif target_state:
+        state_cities = [c for c in cities if c["state"].lower() == target_state.lower()]
+        other_cities = [c for c in cities if c["state"].lower() != target_state.lower()]
+        cities = state_cities + other_cities
+        print(f"Prioritized state: {target_state} ({len(state_cities)} cities).")
             
     return cities
 
@@ -326,10 +326,10 @@ class NotaryCafeScraper:
         await asyncio.sleep(random.uniform(min_s, max_s))
 
     async def search_city(self, page, city, state, retries=3):
-        """Searches for 'State, City' on NotaryCafe (with auto-retry)."""
-        query = f"{state.strip()}, {city.strip()}"
+        """Searches for city name only on NotaryCafe (with auto-retry)."""
+        query = city.strip()
         print(f"\n========================================================")
-        print(f"Searching for: {query} (State: {state} | City: {city})")
+        print(f"Searching for City: {query} (State: {state})")
         print(f"========================================================")
         
         for attempt in range(1, retries + 1):
@@ -371,7 +371,7 @@ class NotaryCafeScraper:
                 else:
                     await search_input.press("Enter")
                     
-                print(f"Search submitted for '{query}'. Waiting for results...")
+                print(f"Search submitted for city '{query}'. Waiting for results...")
                 try:
                     await page.wait_for_load_state("domcontentloaded", timeout=30000)
                 except Exception:
@@ -399,7 +399,7 @@ class NotaryCafeScraper:
             "no notaries in"
         ]
         if any(ind in body_text.lower() for ind in no_res_indicators):
-            print(f"No notaries found for {state}, {city}.")
+            print(f"No notaries found for city: {city} ({state}).")
             return []
             
         # Find all 'View Profile' links
@@ -482,9 +482,9 @@ class NotaryCafeScraper:
                 card_social = self.extract_social_links(card_full_text)
                 
                 item = {
-                    "Search_Query": f"{state}, {city}",
-                    "State_Searched": state,
                     "City_Searched": city,
+                    "State_Searched": state,
+                    "Search_Query": city,
                     "Page_Number": page_num,
                     "Position_on_Page": idx,
                     "Name": name,
@@ -847,9 +847,9 @@ class NotaryCafeScraper:
                 "Document_Links": docs_str,
                 
                 # Metadata
-                "Search_Query": summary_info.get("Search_Query", ""),
-                "State_Searched": summary_info.get("State_Searched", ""),
                 "City_Searched": summary_info.get("City_Searched", ""),
+                "State_Searched": summary_info.get("State_Searched", ""),
+                "Search_Query": summary_info.get("Search_Query", ""),
                 "Page_Number": summary_info.get("Page_Number", 1),
                 "Position_on_Page": summary_info.get("Position_on_Page", 1),
                 "Scraped_At": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -906,7 +906,6 @@ class NotaryCafeScraper:
             """)
             
             search_page = await context.new_page()
-            current_active_state = None
             
             try:
                 for c_idx, c_info in enumerate(self.cities, start=1):
@@ -914,28 +913,19 @@ class NotaryCafeScraper:
                     state = c_info["state"]
                     city_key = f"{city}_{state}"
                     
-                    # Log state transitions cleanly
-                    if state != current_active_state:
-                        current_active_state = state
-                        state_cities = [c for c in self.cities if c["state"] == current_active_state]
-                        done_in_state = sum(1 for c in state_cities if self.is_city_completed(c["city"], c["state"]))
-                        print("\n" + "=" * 72)
-                        print(f"  >>> ACTIVE STATE: {current_active_state.upper()} ({done_in_state}/{len(state_cities)} cities completed)")
-                        print("=" * 72)
-                    
                     if self.is_city_completed(city, state):
-                        print(f"[{c_idx}/{len(self.cities)}] City already completed: {state}, {city}. Skipping.")
+                        print(f"[{c_idx}/{len(self.cities)}] City already completed: {city} ({state}). Skipping.")
                         continue
                         
-                    print(f"\n>>> [{c_idx}/{len(self.cities)}] [State: {state}] Processing City: {city}")
+                    print(f"\n>>> [{c_idx}/{len(self.cities)}] Processing City: {city} ({state})")
                     
                     searched = await self.search_city(search_page, city, state)
                     if not searched:
-                        print(f"Failed to submit search for {state}, {city}. Recording status...")
+                        print(f"Failed to submit search for city '{city}'. Recording status...")
                         self.city_stats_records.append({
-                            "State": state,
                             "City": city,
-                            "Search_Query": f"{state}, {city}",
+                            "State": state,
+                            "Search_Query": city,
                             "Total_Listings_Found": 0,
                             "Total_Pages": 0,
                             "Status": "Search Failed",
@@ -950,7 +940,7 @@ class NotaryCafeScraper:
                     
                     # Multi-page pagination loop (scrapes ALL pages until no more pages)
                     while True:
-                        print(f"\n--- [State: {state} | City: {city}] Processing Page {current_page} ---")
+                        print(f"\n--- [City: {city} | State: {state}] Processing Page {current_page} ---")
                         
                         listings = await self.parse_search_listings(search_page, city, state, current_page)
                         
@@ -967,11 +957,11 @@ class NotaryCafeScraper:
                             
                         if not unique_listings:
                             if current_page == 1:
-                                print(f"Zero listings found for {state}, {city}. Recording in City Stats...")
+                                print(f"Zero listings found for city: {city} ({state}). Recording in City Stats...")
                                 self.city_stats_records.append({
-                                    "State": state,
                                     "City": city,
-                                    "Search_Query": f"{state}, {city}",
+                                    "State": state,
+                                    "Search_Query": city,
                                     "Total_Listings_Found": 0,
                                     "Total_Pages": 0,
                                     "Status": "No Results",
@@ -983,7 +973,7 @@ class NotaryCafeScraper:
                                     self.completed_cities.add(f"{city}_{state_abbr}")
                                 self.save_data()
                             else:
-                                print(f"No further listings found on page {current_page}. Pagination complete for {state}, {city}.")
+                                print(f"No further listings found on page {current_page}. Pagination complete for {city}.")
                             break
                             
                         # Process listings on current page
@@ -1010,7 +1000,7 @@ class NotaryCafeScraper:
                         
                         # Check user page limit if specified
                         if self.max_pages and current_page >= self.max_pages:
-                            print(f"Reached max_pages limit ({self.max_pages}) for {state}, {city}.")
+                            print(f"Reached max_pages limit ({self.max_pages}) for {city}.")
                             break
                             
                         # Detect and click NEXT page button
@@ -1047,10 +1037,10 @@ class NotaryCafeScraper:
                                 pass
                                 
                         if not next_btn:
-                            print(f"No Next page button or next page link found. Finished all pages for {state}, {city}.")
+                            print(f"No Next page button or next page link found. Finished all pages for {city}.")
                             break
                             
-                        print(f"Navigating to Page {current_page + 1} for {state}, {city}...")
+                        print(f"Navigating to Page {current_page + 1} for {city}...")
                         try:
                             prev_first_url = unique_listings[0].get("Profile_URL") if unique_listings else None
                             await next_btn.click()
@@ -1076,9 +1066,9 @@ class NotaryCafeScraper:
                     # City complete with results!
                     if city_listings_count > 0:
                         self.city_stats_records.append({
-                            "State": state,
                             "City": city,
-                            "Search_Query": f"{state}, {city}",
+                            "State": state,
+                            "Search_Query": city,
                             "Total_Listings_Found": city_listings_count,
                             "Total_Pages": current_page,
                             "Status": "Completed",
@@ -1089,10 +1079,10 @@ class NotaryCafeScraper:
                         if state_abbr:
                             self.completed_cities.add(f"{city}_{state_abbr}")
                         self.save_data()
-                        print(f"\n[CITY COMPLETE] {state}, {city} -> Total: {city_listings_count} unique listings across {current_page} pages.")
+                        print(f"\n[CITY COMPLETE] {city} ({state}) -> Total: {city_listings_count} unique listings across {current_page} pages.")
                         
                     if self.single_city:
-                        print(f"Single city mode requested. Finished {state}, {city}.")
+                        print(f"Single city mode requested. Finished {city}.")
                         break
                         
                     await self.human_delay(3.0, 6.0)
@@ -1110,10 +1100,10 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="NotaryCafe Automated Directory Scraper")
     parser.add_argument("--city", default=None, help="Starting city name (e.g. Abbeville).")
-    parser.add_argument("--state", default=None, help="Starting state name (e.g. Alabama).")
+    parser.add_argument("--state", default=None, help="State filter (e.g. Alabama).")
     parser.add_argument("--fresh", action="store_true", help="Start completely fresh from beginning (backups old data).")
     parser.add_argument("--resume", action="store_true", help="Resume from last saved checkpoint without asking.")
-    parser.add_argument("--sort-by", choices=["state", "city"], default="state", help="Grouping: 'state' (State-wise A to Z) or 'city' (City A to Z).")
+    parser.add_argument("--sort-by", choices=["city", "state"], default="city", help="Grouping: 'city' (City A to Z) or 'state' (State-wise A to Z).")
     parser.add_argument("--max-pages", type=int, default=None, help="Maximum pages to scrape per city.")
     parser.add_argument("--single-city", action="store_true", help="Scrape only the specified city then stop.")
     args = parser.parse_args()
@@ -1129,12 +1119,12 @@ if __name__ == "__main__":
         mode = "resume"
 
     if mode == "fresh":
-        print("\n--- INITIATING FRESH START (STATE-WISE A TO Z) ---")
+        print("\n--- INITIATING FRESH START (CITY-WISE A TO Z) ---")
         backup_existing_files()
     else:
         print("\n--- INITIATING RESUME MODE (CHECKING EXISTING FILES) ---")
 
-    print(f"Scraper target: {args.state or 'All States (A-Z)'}, {args.city or 'All Cities (A-Z)'} | Mode: {mode.upper()} | Grouping: {args.sort_by.upper()} | Single city: {args.single_city} | Max pages: {args.max_pages}")
+    print(f"Scraper target: {args.city or 'All Cities (A-Z)'}, {args.state or 'All States'} | Mode: {mode.upper()} | Grouping: {args.sort_by.upper()} | Single city: {args.single_city} | Max pages: {args.max_pages}")
     cities_list = load_cities_from_excel(target_city=args.city, target_state=args.state, sort_by=args.sort_by)
     scraper = NotaryCafeScraper(
         cities_list, 
