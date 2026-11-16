@@ -1,24 +1,22 @@
 """
-NotaryCafe Complete Automated Scraper
-====================================
+NotaryCafe Complete Automated Scraper - Super Speedup Edition
+============================================================
 Scrapes notary listings and detailed profiles from https://notarycafe.com/
 Generates three structured Excel files:
   1. notarycafe_city_stats.xlsx         (City summary: City, State, Search_Query, Total_Listings_Found, Total_Pages, Status)
   2. notarycafe_listings_summary.xlsx   (All listings summary + contact + social links)
   3. notarycafe_detailed_profiles.xlsx  (Full deep profile data for each notary across all 18 sections)
 
-Workflow:
-  - Search Query: Types City name only into search box (e.g. "Abbeville", "Bloomington")
-  - City-wise Traversal: Scrapes cities alphabetically (A to Z) from master dataset
-  - Multi-Page Pagination: Traverses Page 1, Page 2, Page 3... until all listings in that city are scraped
+Super Speedup Architecture:
+  - Multi-Worker Contexts: Spawns 2 isolated Chrome browser contexts (Worker 1 and Worker 2)
+  - Concurrent Tabs: Each worker crawls 4-5 profile tabs in parallel (total 8-10 active tabs)
+  - Dynamic Work Queue: An asyncio.Queue prevents any overlap or duplicate city processing
+  - Thread-Safe File Lock: asyncio.Lock ensures clean, collision-free writing to Excel & JSON
   - 3-Level Deduplication:
-      1. Result Card Level: Filters identical cards on the same search page
+      1. Card-Level: Filters duplicate cards on the same search page
       2. City Search Level: Filters repeat notaries across pagination pages of the same search
-      3. Global Database Level: Recognizes already crawled profiles to avoid redundant tab crawls and duplicate rows
-  - Interactive Startup Menu:
-      [1] Fresh Start (Safe backup of old files, clean reset, starts City A to Z)
-      [2] Resume (Inspects existing files/progress.json, skips completed cities, continues next)
-  - Stealth Chrome Launch: Anti-detection flags for VPN / Cloudflare compatibility
+      3. Global Database Level: Real-time recognition of already-crawled profiles to skip redundant deep crawls
+  - Anti-Ban Stealth: Visible Chrome with automation flags disabled, random human delays & typing jitter
 """
 
 import asyncio
@@ -45,6 +43,9 @@ CITY_STATS_EXCEL = OUTPUT_DIR / "notarycafe_city_stats.xlsx"
 SUMMARY_EXCEL = OUTPUT_DIR / "notarycafe_listings_summary.xlsx"
 DETAILED_EXCEL = OUTPUT_DIR / "notarycafe_detailed_profiles.xlsx"
 PROGRESS_FILE = OUTPUT_DIR / "progress.json"
+
+DEFAULT_NUM_WORKERS = 2
+DEFAULT_CONCURRENT_TABS = 4
 
 # State abbreviation to full name mapping
 STATE_ABBR_MAP = {
@@ -112,7 +113,7 @@ def prompt_user_mode():
     print("=" * 70)
     print("  [1] Fresh Start (Shuru se start karein - Nayi Excel files)")
     print("      -> Search format: City name only (e.g. 'Abbeville', 'Bloomington')")
-    print("      -> City-wise A to Z order (Abbeville -> Boston -> ... -> Zwolle)")
+    print("      -> Super Speedup: 2 Workers + 4-5 Concurrent Tabs per worker")
     print("      -> Purani files ka safe backup ban jayega (notarycafe_output/backup_...)")
     print("      -> Teeno brand new empty Excel files banengi")
     print()
@@ -168,7 +169,6 @@ def load_cities_from_excel(target_city=None, target_state=None, sort_by="city"):
             
     print(f"Loaded {len(cities)} unique cities from file (Grouping: {sort_by.upper()}-wise).")
     
-    # If target specified, prioritize that state/city
     if target_city and target_state:
         target_idx = None
         for i, c in enumerate(cities):
@@ -199,12 +199,15 @@ def load_cities_from_excel(target_city=None, target_state=None, sort_by="city"):
 
 
 class NotaryCafeScraper:
-    def __init__(self, cities, start_city=None, start_state=None, max_pages=None, single_city=False):
+    def __init__(self, cities, start_city=None, start_state=None, max_pages=None, single_city=False, num_workers=2, concurrent_tabs=4):
         self.cities = cities
         self.start_city = start_city
         self.start_state = start_state
         self.max_pages = max_pages
         self.single_city = single_city
+        self.num_workers = max(1, num_workers if not single_city else 1)
+        self.concurrent_tabs = max(1, concurrent_tabs)
+        self.save_lock = asyncio.Lock()
         self.completed_cities = set()
         self.completed_profiles = set()
         self.city_stats_records = []
@@ -322,20 +325,18 @@ class NotaryCafeScraper:
         except Exception as de:
             print(f"Warning saving detailed excel: {de}")
 
-    async def human_delay(self, min_s=1.5, max_s=3.5):
+    async def human_delay(self, min_s=1.2, max_s=2.8):
         await asyncio.sleep(random.uniform(min_s, max_s))
 
-    async def search_city(self, page, city, state, retries=3):
+    async def search_city(self, page, city, state, worker_id=1, retries=3):
         """Searches for city name only on NotaryCafe (with auto-retry)."""
         query = city.strip()
-        print(f"\n========================================================")
-        print(f"Searching for City: {query} (State: {state})")
-        print(f"========================================================")
+        print(f"\n[Worker {worker_id}] Searching for City: '{query}' (State: {state})")
         
         for attempt in range(1, retries + 1):
             try:
                 await page.goto(SEARCH_URL, wait_until="domcontentloaded", timeout=45000)
-                await self.human_delay(1.5, 3.0)
+                await self.human_delay(1.2, 2.5)
                 
                 search_selectors = [
                     'input[placeholder*="zip, city, state" i]',
@@ -353,17 +354,17 @@ class NotaryCafeScraper:
                         break
                         
                 if not search_input:
-                    print(f"Attempt {attempt}: Search input not visible, retrying...")
-                    await asyncio.sleep(3)
+                    print(f"[Worker {worker_id}] Attempt {attempt}: Search input not visible, retrying...")
+                    await asyncio.sleep(2)
                     continue
                     
                 await search_input.click()
                 await search_input.fill("")
-                await self.human_delay(0.2, 0.5)
+                await self.human_delay(0.2, 0.4)
                 
                 for char in query:
-                    await search_input.type(char, delay=random.randint(30, 80))
-                await self.human_delay(0.4, 0.8)
+                    await search_input.type(char, delay=random.randint(25, 65))
+                await self.human_delay(0.3, 0.6)
                 
                 search_button = await page.query_selector('button:has-text("Search"), input[type="submit"][value*="Search"]')
                 if search_button and await search_button.is_visible():
@@ -371,23 +372,23 @@ class NotaryCafeScraper:
                 else:
                     await search_input.press("Enter")
                     
-                print(f"Search submitted for city '{query}'. Waiting for results...")
+                print(f"[Worker {worker_id}] Search submitted for '{query}'. Waiting for results...")
                 try:
                     await page.wait_for_load_state("domcontentloaded", timeout=30000)
                 except Exception:
                     pass
-                await self.human_delay(2.0, 3.5)
+                await self.human_delay(1.5, 3.0)
                 return True
                 
             except Exception as e:
-                print(f"Attempt {attempt}/{retries} failed searching for '{query}': {e}")
+                print(f"[Worker {worker_id}] Attempt {attempt}/{retries} failed searching for '{query}': {e}")
                 if attempt < retries:
-                    await asyncio.sleep(4)
+                    await asyncio.sleep(3)
                 else:
                     return False
         return False
 
-    async def parse_search_listings(self, page, city, state, page_num):
+    async def parse_search_listings(self, page, city, state, page_num, worker_id=1):
         """Parses the listing cards visible on the search results page with card-level deduplication."""
         listings = []
         
@@ -399,7 +400,7 @@ class NotaryCafeScraper:
             "no notaries in"
         ]
         if any(ind in body_text.lower() for ind in no_res_indicators):
-            print(f"No notaries found for city: {city} ({state}).")
+            print(f"[Worker {worker_id}] No notaries found for city: {city} ({state}).")
             return []
             
         # Find all 'View Profile' links
@@ -415,7 +416,7 @@ class NotaryCafeScraper:
         if not view_profile_links:
             return []
 
-        print(f"Found {len(view_profile_links)} cards on Page {page_num}.")
+        print(f"[Worker {worker_id}] Found {len(view_profile_links)} cards on Page {page_num}.")
         
         seen_urls_on_page = set()
         
@@ -504,7 +505,7 @@ class NotaryCafeScraper:
                 }
                 listings.append(item)
             except Exception as e:
-                print(f"Error parsing card {idx}: {e}")
+                print(f"[Worker {worker_id}] Error parsing card {idx}: {e}")
                 
         return listings
 
@@ -521,28 +522,27 @@ class NotaryCafeScraper:
                         break
         return found
 
-    async def scrape_detail_page(self, context, profile_url, summary_info):
-        """Opens the profile page in a new tab, extracts all 18 structured fields, and closes the tab."""
-        print(f"    -> Opening profile: {profile_url}")
+    async def scrape_detail_page(self, context, profile_url, summary_info, worker_id=1):
+        """Opens the profile page in a tab, extracts all 18 structured fields, and closes the tab."""
         detail_page = await context.new_page()
         
         try:
             await detail_page.goto(profile_url, wait_until="domcontentloaded", timeout=45000)
-            await self.human_delay(1.5, 3.0)
+            await self.human_delay(1.2, 2.4)
             
-            # Human-like scroll to trigger dynamic content
+            # Fast human-like scroll to trigger dynamic content
             await detail_page.evaluate("""
                 () => {
                     window.scrollTo(0, document.body.scrollHeight / 2);
                 }
             """)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
             await detail_page.evaluate("""
                 () => {
                     window.scrollTo(0, document.body.scrollHeight);
                 }
             """)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
             await detail_page.evaluate("() => window.scrollTo(0, 0)")
             
             page_text = await detail_page.inner_text("body")
@@ -857,14 +857,229 @@ class NotaryCafeScraper:
             return detail_record
             
         except Exception as e:
-            print(f"Error extracting profile {profile_url}: {e}")
+            print(f"[Worker {worker_id}] Error extracting profile {profile_url}: {e}")
             return None
         finally:
             await detail_page.close()
 
+    async def worker_loop(self, worker_id, context, city_queue):
+        """Dedicated worker routine managing its own search page and parallel profile tabs."""
+        print(f"[Worker {worker_id}] Worker online. Ready to process work queue...")
+        search_page = await context.new_page()
+        profile_sem = asyncio.Semaphore(self.concurrent_tabs)
+        
+        try:
+            while not city_queue.empty():
+                try:
+                    c_idx, total_count, c_info = city_queue.get_nowait()
+                except (asyncio.QueueEmpty, Exception):
+                    break
+                    
+                city = c_info["city"]
+                state = c_info["state"]
+                city_key = f"{city}_{state}"
+                
+                if self.is_city_completed(city, state):
+                    print(f"[Worker {worker_id}] [{c_idx}/{total_count}] Already completed: {city} ({state}). Skipping.")
+                    city_queue.task_done()
+                    continue
+                    
+                print(f"\n[Worker {worker_id}] >>> [{c_idx}/{total_count}] Processing City: {city} ({state})")
+                
+                searched = await self.search_city(search_page, city, state, worker_id=worker_id)
+                if not searched:
+                    print(f"[Worker {worker_id}] Failed to submit search for city '{city}'. Recording status...")
+                    async with self.save_lock:
+                        self.city_stats_records.append({
+                            "City": city,
+                            "State": state,
+                            "Search_Query": city,
+                            "Total_Listings_Found": 0,
+                            "Total_Pages": 0,
+                            "Status": "Search Failed",
+                            "Scraped_At": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        })
+                        self.save_data()
+                    city_queue.task_done()
+                    continue
+                    
+                current_page = 1
+                city_listings_count = 0
+                city_seen_profiles = set()
+                
+                # Multi-page pagination loop (scrapes ALL pages until no more pages)
+                while True:
+                    print(f"[Worker {worker_id}] --- [City: {city} | State: {state}] Processing Page {current_page} ---")
+                    
+                    listings = await self.parse_search_listings(search_page, city, state, current_page, worker_id=worker_id)
+                    
+                    # Search-level deduplication (filters repeat notaries across pagination pages)
+                    unique_listings = []
+                    for l in listings:
+                        p_url = l.get("Profile_URL")
+                        if p_url and p_url in city_seen_profiles:
+                            print(f"  [Worker {worker_id}] [PAGE DUPLICATE] Skipping repeat notary: {l.get('Name')} ({p_url})")
+                            continue
+                        if p_url:
+                            city_seen_profiles.add(p_url)
+                        unique_listings.append(l)
+                        
+                    if not unique_listings:
+                        if current_page == 1:
+                            print(f"[Worker {worker_id}] Zero listings found for city: {city} ({state}). Recording in City Stats...")
+                            async with self.save_lock:
+                                self.city_stats_records.append({
+                                    "City": city,
+                                    "State": state,
+                                    "Search_Query": city,
+                                    "Total_Listings_Found": 0,
+                                    "Total_Pages": 0,
+                                    "Status": "No Results",
+                                    "Scraped_At": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                })
+                                self.completed_cities.add(city_key)
+                                state_abbr = STATE_FULL_TO_ABBR.get(state.lower())
+                                if state_abbr:
+                                    self.completed_cities.add(f"{city}_{state_abbr}")
+                                self.save_data()
+                        else:
+                            print(f"[Worker {worker_id}] No further listings on page {current_page}. Pagination complete for {city}.")
+                        break
+                        
+                    # Save summary listings under lock
+                    async with self.save_lock:
+                        for s_item in unique_listings:
+                            self.summary_records.append(s_item)
+                            
+                    # Super Speedup: Concurrent Profile Scraping in parallel tabs
+                    print(f"[Worker {worker_id}] Scraping {len(unique_listings)} listings on Page {current_page} ({self.concurrent_tabs} parallel tabs)...")
+                    
+                    async def scrape_single_profile(pos_idx, summary_item):
+                        prof_url = summary_item["Profile_URL"]
+                        
+                        # Global database level deduplication: skip deep crawl if profile already extracted
+                        if prof_url in self.completed_profiles:
+                            print(f"  [Worker {worker_id}] [DUPLICATE] Already in database, skipping deep crawl: {summary_item.get('Name')} ({prof_url})")
+                            return None
+                            
+                        async with profile_sem:
+                            print(f"  [Worker {worker_id}] [Tab] Opening profile [{pos_idx}/{len(unique_listings)}]: {summary_item.get('Name')}")
+                            rec = await self.scrape_detail_page(context, prof_url, summary_item, worker_id=worker_id)
+                            if rec:
+                                async with self.save_lock:
+                                    self.detailed_records.append(rec)
+                                    self.completed_profiles.add(prof_url)
+                            return rec
+
+                    tasks = [scrape_single_profile(idx, item) for idx, item in enumerate(unique_listings, start=1)]
+                    await asyncio.gather(*tasks)
+                    
+                    # Batch save after all parallel tabs on this page complete
+                    async with self.save_lock:
+                        self.save_data()
+                        
+                    city_listings_count += len(unique_listings)
+                    
+                    # Check user page limit if specified
+                    if self.max_pages and current_page >= self.max_pages:
+                        print(f"[Worker {worker_id}] Reached max_pages limit ({self.max_pages}) for {city}.")
+                        break
+                        
+                    # Detect and click NEXT page button
+                    next_selectors = [
+                        'a:has-text("Next")',
+                        'button:has-text("Next")',
+                        'a[rel="next"]',
+                        '.pagination .next a',
+                        '.pager .next a',
+                        'li.next:not(.disabled) a',
+                        'a[aria-label*="Next" i]',
+                        'a[aria-label="Next"]',
+                        f'.pagination a:has-text("{current_page + 1}")',
+                        f'nav a:has-text("{current_page + 1}")',
+                        f'a:has-text("{current_page + 1}")'
+                    ]
+                    
+                    next_btn = None
+                    for sel in next_selectors:
+                        try:
+                            candidate = await search_page.query_selector(sel)
+                            if candidate and await candidate.is_visible():
+                                is_disabled = await candidate.evaluate('''el => {
+                                    return el.classList.contains("disabled") || 
+                                           el.getAttribute("aria-disabled") === "true" || 
+                                           el.hasAttribute("disabled") || 
+                                           (el.closest(".disabled") !== null) ||
+                                           (el.closest("[aria-disabled='true']") !== null);
+                                }''')
+                                if not is_disabled:
+                                    next_btn = candidate
+                                    break
+                        except Exception:
+                            pass
+                            
+                    if not next_btn:
+                        print(f"[Worker {worker_id}] No Next page button found. Finished all pages for {city}.")
+                        break
+                        
+                    print(f"[Worker {worker_id}] Navigating to Page {current_page + 1} for {city}...")
+                    try:
+                        prev_first_url = unique_listings[0].get("Profile_URL") if unique_listings else None
+                        await next_btn.click()
+                        try:
+                            await search_page.wait_for_load_state("domcontentloaded", timeout=30000)
+                        except Exception:
+                            pass
+                        await self.human_delay(2.5, 4.0)
+                        
+                        # Verify if new page loaded
+                        new_cards = await search_page.query_selector_all('a:has-text("View Profile")')
+                        if new_cards:
+                            new_url = await new_cards[0].get_attribute("href")
+                            if new_url and prev_first_url and new_url in prev_first_url:
+                                print(f"[Worker {worker_id}] Waiting additional time for page change...")
+                                await self.human_delay(2.0, 3.5)
+                                
+                        current_page += 1
+                    except Exception as n_err:
+                        print(f"[Worker {worker_id}] Error navigating to next page: {n_err}")
+                        break
+                        
+                # City complete with results!
+                if city_listings_count > 0:
+                    async with self.save_lock:
+                        self.city_stats_records.append({
+                            "City": city,
+                            "State": state,
+                            "Search_Query": city,
+                            "Total_Listings_Found": city_listings_count,
+                            "Total_Pages": current_page,
+                            "Status": "Completed",
+                            "Scraped_At": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        })
+                        self.completed_cities.add(city_key)
+                        state_abbr = STATE_FULL_TO_ABBR.get(state.lower())
+                        if state_abbr:
+                            self.completed_cities.add(f"{city}_{state_abbr}")
+                        self.save_data()
+                    print(f"\n[Worker {worker_id}] [CITY COMPLETE] {city} ({state}) -> Total: {city_listings_count} unique listings across {current_page} pages.")
+                    
+                city_queue.task_done()
+                
+                if self.single_city:
+                    print(f"[Worker {worker_id}] Single city mode requested. Finished {city}.")
+                    break
+                    
+                await self.human_delay(2.0, 4.0)
+                
+        finally:
+            await search_page.close()
+            print(f"[Worker {worker_id}] Search page closed. Worker finished.")
+
     async def run(self):
         print("\n" + "=" * 70)
-        print("Starting NotaryCafe Scraper...")
+        print("Starting NotaryCafe Scraper - SUPER SPEEDUP EDITION")
+        print(f"Workers: {self.num_workers} isolated contexts | Concurrent tabs per worker: {self.concurrent_tabs}")
         print(f"Target Excel 1 (City Stats):     {CITY_STATS_EXCEL}")
         print(f"Target Excel 2 (Summary Cards):  {SUMMARY_EXCEL}")
         print(f"Target Excel 3 (Full Profiles):  {DETAILED_EXCEL}")
@@ -893,202 +1108,41 @@ class NotaryCafeScraper:
                     ]
                 )
                 
-            context = await browser.new_context(
-                viewport=None,
-                locale="en-US",
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-            )
-            
-            # Anti-detection stealth script
-            await context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                window.chrome = {runtime: {}};
-            """)
-            
-            search_page = await context.new_page()
-            
+            # Populate thread-safe queue with cities
+            city_queue = asyncio.Queue()
+            for idx, c_info in enumerate(self.cities, start=1):
+                city_queue.put_nowait((idx, len(self.cities), c_info))
+                
+            # Create isolated contexts for each worker
+            contexts = []
+            for w_id in range(1, self.num_workers + 1):
+                ctx = await browser.new_context(
+                    viewport=None,
+                    locale="en-US",
+                    user_agent=f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.{w_id} Safari/537.36"
+                )
+                await ctx.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    window.chrome = {runtime: {}};
+                """)
+                contexts.append(ctx)
+                
             try:
-                for c_idx, c_info in enumerate(self.cities, start=1):
-                    city = c_info["city"]
-                    state = c_info["state"]
-                    city_key = f"{city}_{state}"
-                    
-                    if self.is_city_completed(city, state):
-                        print(f"[{c_idx}/{len(self.cities)}] City already completed: {city} ({state}). Skipping.")
-                        continue
-                        
-                    print(f"\n>>> [{c_idx}/{len(self.cities)}] Processing City: {city} ({state})")
-                    
-                    searched = await self.search_city(search_page, city, state)
-                    if not searched:
-                        print(f"Failed to submit search for city '{city}'. Recording status...")
-                        self.city_stats_records.append({
-                            "City": city,
-                            "State": state,
-                            "Search_Query": city,
-                            "Total_Listings_Found": 0,
-                            "Total_Pages": 0,
-                            "Status": "Search Failed",
-                            "Scraped_At": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        })
-                        self.save_data()
-                        continue
-                        
-                    current_page = 1
-                    city_listings_count = 0
-                    city_seen_profiles = set()
-                    
-                    # Multi-page pagination loop (scrapes ALL pages until no more pages)
-                    while True:
-                        print(f"\n--- [City: {city} | State: {state}] Processing Page {current_page} ---")
-                        
-                        listings = await self.parse_search_listings(search_page, city, state, current_page)
-                        
-                        # Search-level deduplication (filters repeat notaries across pagination pages)
-                        unique_listings = []
-                        for l in listings:
-                            p_url = l.get("Profile_URL")
-                            if p_url and p_url in city_seen_profiles:
-                                print(f"  [PAGE DUPLICATE] Skipping repeat notary in city search: {l.get('Name')} ({p_url})")
-                                continue
-                            if p_url:
-                                city_seen_profiles.add(p_url)
-                            unique_listings.append(l)
-                            
-                        if not unique_listings:
-                            if current_page == 1:
-                                print(f"Zero listings found for city: {city} ({state}). Recording in City Stats...")
-                                self.city_stats_records.append({
-                                    "City": city,
-                                    "State": state,
-                                    "Search_Query": city,
-                                    "Total_Listings_Found": 0,
-                                    "Total_Pages": 0,
-                                    "Status": "No Results",
-                                    "Scraped_At": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                })
-                                self.completed_cities.add(city_key)
-                                state_abbr = STATE_FULL_TO_ABBR.get(state.lower())
-                                if state_abbr:
-                                    self.completed_cities.add(f"{city}_{state_abbr}")
-                                self.save_data()
-                            else:
-                                print(f"No further listings found on page {current_page}. Pagination complete for {city}.")
-                            break
-                            
-                        # Process listings on current page
-                        print(f"Scraping {len(unique_listings)} unique listings on Page {current_page}...")
-                        for l_idx, summary_item in enumerate(unique_listings, start=1):
-                            prof_url = summary_item["Profile_URL"]
-                            print(f"  [{l_idx}/{len(unique_listings)}] {summary_item['Name']} ({prof_url})")
-                            
-                            self.summary_records.append(summary_item)
-                            
-                            # Global database level deduplication: skip deep crawl if profile already extracted
-                            if prof_url not in self.completed_profiles:
-                                detail_record = await self.scrape_detail_page(context, prof_url, summary_item)
-                                if detail_record:
-                                    self.detailed_records.append(detail_record)
-                                    self.completed_profiles.add(prof_url)
-                            else:
-                                print("    [DUPLICATE RECOGNIZED] Profile already saved in detailed database, skipping deep crawl.")
-                                
-                            self.save_data()
-                            await self.human_delay(1.0, 2.5)
-                            
-                        city_listings_count += len(unique_listings)
-                        
-                        # Check user page limit if specified
-                        if self.max_pages and current_page >= self.max_pages:
-                            print(f"Reached max_pages limit ({self.max_pages}) for {city}.")
-                            break
-                            
-                        # Detect and click NEXT page button
-                        next_selectors = [
-                            'a:has-text("Next")',
-                            'button:has-text("Next")',
-                            'a[rel="next"]',
-                            '.pagination .next a',
-                            '.pager .next a',
-                            'li.next:not(.disabled) a',
-                            'a[aria-label*="Next" i]',
-                            'a[aria-label="Next"]',
-                            f'.pagination a:has-text("{current_page + 1}")',
-                            f'nav a:has-text("{current_page + 1}")',
-                            f'a:has-text("{current_page + 1}")'
-                        ]
-                        
-                        next_btn = None
-                        for sel in next_selectors:
-                            try:
-                                candidate = await search_page.query_selector(sel)
-                                if candidate and await candidate.is_visible():
-                                    is_disabled = await candidate.evaluate('''el => {
-                                        return el.classList.contains("disabled") || 
-                                               el.getAttribute("aria-disabled") === "true" || 
-                                               el.hasAttribute("disabled") || 
-                                               (el.closest(".disabled") !== null) ||
-                                               (el.closest("[aria-disabled='true']") !== null);
-                                    }''')
-                                    if not is_disabled:
-                                        next_btn = candidate
-                                        break
-                            except Exception:
-                                pass
-                                
-                        if not next_btn:
-                            print(f"No Next page button or next page link found. Finished all pages for {city}.")
-                            break
-                            
-                        print(f"Navigating to Page {current_page + 1} for {city}...")
-                        try:
-                            prev_first_url = unique_listings[0].get("Profile_URL") if unique_listings else None
-                            await next_btn.click()
-                            try:
-                                await search_page.wait_for_load_state("domcontentloaded", timeout=30000)
-                            except Exception:
-                                pass
-                            await self.human_delay(3.0, 5.0)
-                            
-                            # Verify if new page loaded
-                            new_cards = await search_page.query_selector_all('a:has-text("View Profile")')
-                            if new_cards:
-                                new_url = await new_cards[0].get_attribute("href")
-                                if new_url and prev_first_url and new_url in prev_first_url:
-                                    print("Waiting additional time for page change...")
-                                    await self.human_delay(2.0, 4.0)
-                                    
-                            current_page += 1
-                        except Exception as n_err:
-                            print(f"Error navigating to next page: {n_err}")
-                            break
-                            
-                    # City complete with results!
-                    if city_listings_count > 0:
-                        self.city_stats_records.append({
-                            "City": city,
-                            "State": state,
-                            "Search_Query": city,
-                            "Total_Listings_Found": city_listings_count,
-                            "Total_Pages": current_page,
-                            "Status": "Completed",
-                            "Scraped_At": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        })
-                        self.completed_cities.add(city_key)
-                        state_abbr = STATE_FULL_TO_ABBR.get(state.lower())
-                        if state_abbr:
-                            self.completed_cities.add(f"{city}_{state_abbr}")
-                        self.save_data()
-                        print(f"\n[CITY COMPLETE] {city} ({state}) -> Total: {city_listings_count} unique listings across {current_page} pages.")
-                        
-                    if self.single_city:
-                        print(f"Single city mode requested. Finished {city}.")
-                        break
-                        
-                    await self.human_delay(3.0, 6.0)
-                    
+                # Launch all workers in parallel
+                worker_tasks = [
+                    self.worker_loop(w_id, contexts[w_id - 1], city_queue)
+                    for w_id in range(1, self.num_workers + 1)
+                ]
+                await asyncio.gather(*worker_tasks)
             finally:
-                self.save_data()
+                # Close all contexts
+                for ctx in contexts:
+                    try:
+                        await ctx.close()
+                    except Exception:
+                        pass
+                async with self.save_lock:
+                    self.save_data()
                 await browser.close()
                 print("\nBrowser closed. Scraping session finished.")
                 print(f"Total City Stats Records:      {len(self.city_stats_records)}")
@@ -1098,12 +1152,14 @@ class NotaryCafeScraper:
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="NotaryCafe Automated Directory Scraper")
+    parser = argparse.ArgumentParser(description="NotaryCafe Automated Directory Scraper - Super Speedup Edition")
     parser.add_argument("--city", default=None, help="Starting city name (e.g. Abbeville).")
     parser.add_argument("--state", default=None, help="State filter (e.g. Alabama).")
     parser.add_argument("--fresh", action="store_true", help="Start completely fresh from beginning (backups old data).")
     parser.add_argument("--resume", action="store_true", help="Resume from last saved checkpoint without asking.")
     parser.add_argument("--sort-by", choices=["city", "state"], default="city", help="Grouping: 'city' (City A to Z) or 'state' (State-wise A to Z).")
+    parser.add_argument("--workers", type=int, default=DEFAULT_NUM_WORKERS, help=f"Number of parallel worker profiles (default: {DEFAULT_NUM_WORKERS}).")
+    parser.add_argument("--tabs", type=int, default=DEFAULT_CONCURRENT_TABS, help=f"Number of concurrent profile tabs per worker (default: {DEFAULT_CONCURRENT_TABS}).")
     parser.add_argument("--max-pages", type=int, default=None, help="Maximum pages to scrape per city.")
     parser.add_argument("--single-city", action="store_true", help="Scrape only the specified city then stop.")
     args = parser.parse_args()
@@ -1124,13 +1180,15 @@ if __name__ == "__main__":
     else:
         print("\n--- INITIATING RESUME MODE (CHECKING EXISTING FILES) ---")
 
-    print(f"Scraper target: {args.city or 'All Cities (A-Z)'}, {args.state or 'All States'} | Mode: {mode.upper()} | Grouping: {args.sort_by.upper()} | Single city: {args.single_city} | Max pages: {args.max_pages}")
+    print(f"Scraper target: {args.city or 'All Cities (A-Z)'}, {args.state or 'All States'} | Mode: {mode.upper()} | Grouping: {args.sort_by.upper()} | Workers: {args.workers} | Tabs/Worker: {args.tabs} | Single city: {args.single_city} | Max pages: {args.max_pages}")
     cities_list = load_cities_from_excel(target_city=args.city, target_state=args.state, sort_by=args.sort_by)
     scraper = NotaryCafeScraper(
         cities_list, 
         start_city=args.city, 
         start_state=args.state, 
         max_pages=args.max_pages, 
-        single_city=args.single_city
+        single_city=args.single_city,
+        num_workers=args.workers,
+        concurrent_tabs=args.tabs
     )
     asyncio.run(scraper.run())

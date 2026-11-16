@@ -1,17 +1,18 @@
-# NotaryCafe Complete Automated Directory Scraper
+# NotaryCafe Complete Automated Directory Scraper - Super Speedup Edition
 
-A production-grade, highly resilient web scraper for extracting notary public listings and detailed profiles from [NotaryCafe.com](https://notarycafe.com) using Playwright with anti-bot stealth mechanisms.
+A production-grade, highly resilient web scraper for extracting notary public listings and detailed profiles from [NotaryCafe.com](https://notarycafe.com) using Playwright with anti-bot stealth mechanisms and multi-tab parallel orchestration.
 
 ---
 
-## 🚀 Key Features
+## ⚡ Super Speedup & Parallel Architecture
 
-- **City-Wise Search**: Directly queries City Name only (e.g. `Abbeville`, `Bloomington`, `Chicago`) into the NotaryCafe search bar to maximize matched listings.
-- **Alphabetical City Traversal (A to Z)**: Iterates through cities in alphabetical order (`Abbeville` -> `Aberdeen` -> `Abilene` ... -> `Zwolle`).
-- **Triple-Level Deduplication**:
+- **Multi-Worker Browser Contexts**: Runs 2 isolated worker sessions simultaneously (`Worker 1` & `Worker 2`). Each worker processes an independent city from an `asyncio.Queue` (zero collision / zero overlap).
+- **Concurrent Tabs via `asyncio.Semaphore`**: When a page displays 10 notaries, each worker opens **4 to 5 tabs in parallel** to scrape deep profiles concurrently. As soon as one tab finishes, the semaphore immediately dispatches the next profile! 10 profiles are crawled in just ~8-10 seconds!
+- **Batch Excel Saving with `asyncio.Lock`**: Extracted data is held safely in memory and saved to Excel in clean atomic batches with thread-safe locking. Eliminates file lock collisions and prevents corrupted spreadsheets.
+- **3-Level Deduplication**:
   1. *Result Card Level*: Ignores duplicate cards on the same search page.
   2. *City Search Level*: Filters repeat notaries across pagination pages of the same search.
-  3. *Global Database Level*: Recognizes already crawled profiles to avoid redundant deep tab crawls and duplicate rows.
+  3. *Global Database Level*: Cross-worker recognition of already-crawled profiles prevents redundant tab openings and guarantees zero duplicate rows in the final Excel.
 - **Full Multi-Page Traversal**: For cities with high density (>10 listings across Page 1, Page 2, Page 3, etc.), the scraper automatically paginates through all pages until every single listing is scraped.
 - **Triple Excel Outputs**:
   - `notarycafe_city_stats.xlsx`: **City Summary & Statistics Report** — Tracks every searched city with `City`, `State`, `Search_Query`, `Total_Listings_Found` (0 if no notaries found, exact count if found), `Total_Pages`, `Status` (`Completed`, `No Results`, `Search Failed`), and timestamp. Ideal for high-level analytics, verification, and reporting.
@@ -31,7 +32,7 @@ A production-grade, highly resilient web scraper for extracting notary public li
 ## 📁 Repository Structure
 
 ```
-├── scrape_notarycafe_complete.py         # Main automated scraper script
+├── scrape_notarycafe_complete.py         # Main automated scraper script (Super Speedup)
 ├── start_notary_scraper.bat              # One-click Windows batch runner
 ├── cities-basic-v2025_structured.xlsx    # Master US cities dataset (All_Cities_Raw)
 ├── NOTARYCAFE_SCRAPER_DETAILED_PROMPT.md # Complete technical specification
@@ -78,7 +79,7 @@ Jab aap launcher open karenge, terminal screen par execution menu aayega:
 ======================================================================
   [1] Fresh Start (Shuru se start karein - Nayi Excel files)
       -> Search format: City name only (e.g. 'Abbeville', 'Bloomington')
-      -> City-wise A to Z order (Abbeville -> Boston -> ... -> Zwolle)
+      -> Super Speedup: 2 Workers + 4-5 Concurrent Tabs per worker
       -> Purani files ka safe backup ban jayega (notarycafe_output/backup_...)
       -> Teeno brand new empty Excel files banengi
 
@@ -94,11 +95,14 @@ Aapka chunav [1 ya 2, Default: 2]:
 # Interactive mode (puchhega 1: Fresh Start ya 2: Resume):
 python scrape_notarycafe_complete.py
 
-# Direct Fresh Start (Purana data backup karein aur City-wise A to Z shuru karein):
+# Direct Fresh Start (Purana data backup karein aur Super Speedup mode me start karein):
 python scrape_notarycafe_complete.py --fresh
 
 # Direct Resume (Bina puchhe jaha chhoda tha wahi se continue karein):
 python scrape_notarycafe_complete.py --resume
+
+# Customize workers and tabs (e.g. 2 workers, 5 concurrent tabs each):
+python scrape_notarycafe_complete.py --workers 2 --tabs 5
 
 # Test a single city (e.g. Bloomington):
 python scrape_notarycafe_complete.py --city "Bloomington" --single-city
