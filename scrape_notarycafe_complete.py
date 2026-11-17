@@ -30,6 +30,23 @@ from pathlib import Path
 from datetime import datetime
 import pandas as pd
 from playwright.async_api import async_playwright
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+
+
+def clean_for_excel(val):
+    """Sanitizes text cells by stripping ASCII control characters that crash openpyxl."""
+    if isinstance(val, str):
+        return ILLEGAL_CHARACTERS_RE.sub('', val)
+    return val
+
+
+def sanitize_dataframe_for_excel(df):
+    """Sanitizes all cells and column names of a DataFrame for safe openpyxl saving."""
+    if df is None or df.empty:
+        return df
+    df = df.map(clean_for_excel)
+    df.columns = [clean_for_excel(str(col)) for col in df.columns]
+    return df
 
 # ----------------- CONFIGURATION -----------------
 BASE_URL = "https://notarycafe.com"
@@ -155,6 +172,7 @@ def load_cities_from_excel(target_city=None, target_state=None, sort_by="city"):
         
     cities = []
     seen = set()
+    global_idx = 1
     for _, row in df.iterrows():
         c_name = str(row["City"]).strip()
         s_name = str(row["State"]).strip()
@@ -162,12 +180,15 @@ def load_cities_from_excel(target_city=None, target_state=None, sort_by="city"):
         if key not in seen and c_name and s_name:
             seen.add(key)
             cities.append({
+                "orig_idx": global_idx,
                 "city": c_name,
                 "state": s_name,
                 "population": row.get("Population_2025", 0)
             })
+            global_idx += 1
             
-    print(f"Loaded {len(cities)} unique cities from file (Grouping: {sort_by.upper()}-wise).")
+    total_loaded = len(cities)
+    print(f"Loaded {total_loaded} unique cities from file (Grouping: {sort_by.upper()}-wise).")
     
     if target_city and target_state:
         target_idx = None
@@ -176,9 +197,8 @@ def load_cities_from_excel(target_city=None, target_state=None, sort_by="city"):
                 target_idx = i
                 break
         if target_idx is not None:
-            match = cities.pop(target_idx)
-            cities.insert(0, match)
-            print(f"Set starting city to: {match['city']}, {match['state']}")
+            cities = cities[target_idx:]
+            print(f"Resuming from target city: {cities[0]['city']}, {cities[0]['state']} (Global Index {cities[0]['orig_idx']}/{total_loaded})")
     elif target_city:
         target_idx = None
         for i, c in enumerate(cities):
@@ -186,21 +206,21 @@ def load_cities_from_excel(target_city=None, target_state=None, sort_by="city"):
                 target_idx = i
                 break
         if target_idx is not None:
-            match = cities.pop(target_idx)
-            cities.insert(0, match)
-            print(f"Set starting city to: {match['city']}, {match['state']}")
+            cities = cities[target_idx:]
+            print(f"Resuming from target city: {cities[0]['city']}, {cities[0]['state']} (Global Index {cities[0]['orig_idx']}/{total_loaded})")
     elif target_state:
         state_cities = [c for c in cities if c["state"].lower() == target_state.lower()]
         other_cities = [c for c in cities if c["state"].lower() != target_state.lower()]
         cities = state_cities + other_cities
         print(f"Prioritized state: {target_state} ({len(state_cities)} cities).")
             
-    return cities
+    return cities, total_loaded
 
 
 class NotaryCafeScraper:
-    def __init__(self, cities, start_city=None, start_state=None, max_pages=None, single_city=False, num_workers=2, concurrent_tabs=4):
+    def __init__(self, cities, total_cities=19465, start_city=None, start_state=None, max_pages=None, single_city=False, num_workers=2, concurrent_tabs=4):
         self.cities = cities
+        self.total_cities = total_cities
         self.start_city = start_city
         self.start_state = start_state
         self.max_pages = max_pages
@@ -292,9 +312,10 @@ class NotaryCafeScraper:
         try:
             if self.city_stats_records:
                 df_stats = pd.DataFrame(self.city_stats_records)
-                df_stats.drop_duplicates(subset=["City", "State"], keep="last", inplace=True)
+                df_stats = df_stats.drop_duplicates(subset=["City", "State"], keep="last")
                 df_stats["Total_Listings_Found"] = pd.to_numeric(df_stats["Total_Listings_Found"], errors="coerce").fillna(0).astype(int)
                 df_stats["Total_Pages"] = pd.to_numeric(df_stats["Total_Pages"], errors="coerce").fillna(0).astype(int)
+                df_stats = sanitize_dataframe_for_excel(df_stats)
                 df_stats.to_excel(CITY_STATS_EXCEL, index=False)
         except PermissionError:
             print(f"Notice: {CITY_STATS_EXCEL.name} is currently open in Excel. Skipping write this turn (data safe in memory).")
@@ -305,7 +326,8 @@ class NotaryCafeScraper:
         try:
             if self.summary_records:
                 df_s = pd.DataFrame(self.summary_records)
-                df_s.drop_duplicates(subset=["Profile_URL", "City_Searched", "State_Searched"], keep="last", inplace=True)
+                df_s = df_s.drop_duplicates(subset=["Profile_URL", "City_Searched", "State_Searched"], keep="last")
+                df_s = sanitize_dataframe_for_excel(df_s)
                 df_s.to_excel(SUMMARY_EXCEL, index=False)
         except PermissionError:
             print(f"Notice: {SUMMARY_EXCEL.name} is currently open in Excel. Skipping write this turn (data safe in memory).")
@@ -318,7 +340,8 @@ class NotaryCafeScraper:
                 df_d = pd.DataFrame(self.detailed_records)
                 for col in df_d.columns:
                     df_d[col] = df_d[col].astype(object)
-                df_d.drop_duplicates(subset=["Profile_URL"], keep="last", inplace=True)
+                df_d = df_d.drop_duplicates(subset=["Profile_URL"], keep="last")
+                df_d = sanitize_dataframe_for_excel(df_d)
                 df_d.to_excel(DETAILED_EXCEL, index=False)
         except PermissionError:
             print(f"Notice: {DETAILED_EXCEL.name} is currently open in Excel. Skipping write this turn (data safe in memory).")
@@ -392,8 +415,13 @@ class NotaryCafeScraper:
         """Parses the listing cards visible on the search results page with card-level deduplication."""
         listings = []
         
-        # Check for no results indicators
-        body_text = await page.inner_text("body")
+        if page.is_closed():
+            return []
+        try:
+            body_text = await page.inner_text("body")
+        except Exception:
+            return []
+            
         no_res_indicators = [
             "no results", "0 results", "no notaries found", 
             "no matches found", "0 listings", "nothing found", 
@@ -503,6 +531,7 @@ class NotaryCafeScraper:
                     "Other_Social_Links": card_social.get("other", ""),
                     "Scraped_At": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 }
+                item = {k: clean_for_excel(v) if isinstance(v, str) else v for k, v in item.items()}
                 listings.append(item)
             except Exception as e:
                 print(f"[Worker {worker_id}] Error parsing card {idx}: {e}")
@@ -524,7 +553,11 @@ class NotaryCafeScraper:
 
     async def scrape_detail_page(self, context, profile_url, summary_info, worker_id=1):
         """Opens the profile page in a tab, extracts all 18 structured fields, and closes the tab."""
-        detail_page = await context.new_page()
+        try:
+            detail_page = await context.new_page()
+        except Exception as ce:
+            print(f"[Worker {worker_id}] Error opening tab for profile {profile_url}: {ce}")
+            return None
         
         try:
             await detail_page.goto(profile_url, wait_until="domcontentloaded", timeout=45000)
@@ -854,18 +887,43 @@ class NotaryCafeScraper:
                 "Position_on_Page": summary_info.get("Position_on_Page", 1),
                 "Scraped_At": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
+            detail_record = {k: clean_for_excel(v) if isinstance(v, str) else v for k, v in detail_record.items()}
             return detail_record
             
         except Exception as e:
             print(f"[Worker {worker_id}] Error extracting profile {profile_url}: {e}")
             return None
         finally:
-            await detail_page.close()
+            try:
+                if detail_page and not detail_page.is_closed():
+                    await detail_page.close()
+            except Exception:
+                pass
+
+    async def get_valid_search_page(self, worker_id, context, page):
+        """Ensures the worker has an open, responsive search page tab."""
+        try:
+            if page is not None and not page.is_closed():
+                _ = page.url
+                return page
+        except Exception:
+            pass
+
+        print(f"[Worker {worker_id}] Search tab is closed or uninitialized. Launching a fresh tab...")
+        try:
+            if page is not None:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return await context.new_page()
 
     async def worker_loop(self, worker_id, context, city_queue):
         """Dedicated worker routine managing its own search page and parallel profile tabs."""
         print(f"[Worker {worker_id}] Worker online. Ready to process work queue...")
-        search_page = await context.new_page()
+        search_page = await self.get_valid_search_page(worker_id, context, None)
         profile_sem = asyncio.Semaphore(self.concurrent_tabs)
         
         try:
@@ -886,22 +944,30 @@ class NotaryCafeScraper:
                     
                 print(f"\n[Worker {worker_id}] >>> [{c_idx}/{total_count}] Processing City: {city} ({state})")
                 
+                search_page = await self.get_valid_search_page(worker_id, context, search_page)
                 searched = await self.search_city(search_page, city, state, worker_id=worker_id)
                 if not searched:
-                    print(f"[Worker {worker_id}] Failed to submit search for city '{city}'. Recording status...")
-                    async with self.save_lock:
-                        self.city_stats_records.append({
-                            "City": city,
-                            "State": state,
-                            "Search_Query": city,
-                            "Total_Listings_Found": 0,
-                            "Total_Pages": 0,
-                            "Status": "Search Failed",
-                            "Scraped_At": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        })
-                        self.save_data()
-                    city_queue.task_done()
-                    continue
+                    # Tab may have closed or timed out; reopen fresh tab and retry city once
+                    if search_page is None or search_page.is_closed():
+                        print(f"[Worker {worker_id}] Search tab closed during search. Reopening fresh tab and retrying '{city}'...")
+                        search_page = await self.get_valid_search_page(worker_id, context, None)
+                        searched = await self.search_city(search_page, city, state, worker_id=worker_id)
+
+                    if not searched:
+                        print(f"[Worker {worker_id}] Failed to submit search for city '{city}'. Recording status...")
+                        async with self.save_lock:
+                            self.city_stats_records.append({
+                                "City": city,
+                                "State": state,
+                                "Search_Query": city,
+                                "Total_Listings_Found": 0,
+                                "Total_Pages": 0,
+                                "Status": "Search Failed",
+                                "Scraped_At": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            })
+                            self.save_data()
+                        city_queue.task_done()
+                        continue
                     
                 current_page = 1
                 city_listings_count = 0
@@ -1073,7 +1139,11 @@ class NotaryCafeScraper:
                 await self.human_delay(2.0, 4.0)
                 
         finally:
-            await search_page.close()
+            try:
+                if search_page is not None and not search_page.is_closed():
+                    await search_page.close()
+            except Exception:
+                pass
             print(f"[Worker {worker_id}] Search page closed. Worker finished.")
 
     async def run(self):
@@ -1111,7 +1181,8 @@ class NotaryCafeScraper:
             # Populate thread-safe queue with cities
             city_queue = asyncio.Queue()
             for idx, c_info in enumerate(self.cities, start=1):
-                city_queue.put_nowait((idx, len(self.cities), c_info))
+                display_idx = c_info.get("orig_idx", idx)
+                city_queue.put_nowait((display_idx, self.total_cities, c_info))
                 
             # Create isolated contexts for each worker
             contexts = []
@@ -1181,9 +1252,10 @@ if __name__ == "__main__":
         print("\n--- INITIATING RESUME MODE (CHECKING EXISTING FILES) ---")
 
     print(f"Scraper target: {args.city or 'All Cities (A-Z)'}, {args.state or 'All States'} | Mode: {mode.upper()} | Grouping: {args.sort_by.upper()} | Workers: {args.workers} | Tabs/Worker: {args.tabs} | Single city: {args.single_city} | Max pages: {args.max_pages}")
-    cities_list = load_cities_from_excel(target_city=args.city, target_state=args.state, sort_by=args.sort_by)
+    cities_list, total_cities = load_cities_from_excel(target_city=args.city, target_state=args.state, sort_by=args.sort_by)
     scraper = NotaryCafeScraper(
         cities_list, 
+        total_cities=total_cities,
         start_city=args.city, 
         start_state=args.state, 
         max_pages=args.max_pages, 
