@@ -218,7 +218,7 @@ def load_cities_from_excel(target_city=None, target_state=None, sort_by="city"):
 
 
 class NotaryCafeScraper:
-    def __init__(self, cities, total_cities=19465, start_city=None, start_state=None, max_pages=None, single_city=False, num_workers=2, concurrent_tabs=4):
+    def __init__(self, cities, total_cities=19465, start_city=None, start_state=None, max_pages=None, single_city=False, num_workers=2, concurrent_tabs=4, unique_city_names=True):
         self.cities = cities
         self.total_cities = total_cities
         self.start_city = start_city
@@ -227,16 +227,18 @@ class NotaryCafeScraper:
         self.single_city = single_city
         self.num_workers = max(1, num_workers if not single_city else 1)
         self.concurrent_tabs = max(1, concurrent_tabs)
+        self.unique_city_names = unique_city_names
         self.save_lock = asyncio.Lock()
         self.completed_cities = set()
         self.completed_profiles = set()
+        self.seen_city_names = set()
         self.city_stats_records = []
         self.summary_records = []
         self.detailed_records = []
         self.load_existing_data()
 
     def is_city_completed(self, city, state):
-        """Checks if a city has already been completed, handling full names and 2-letter codes."""
+        """Checks if a city has already been completed, handling full names, 2-letter codes, and unique city name filtering."""
         state_abbr = STATE_FULL_TO_ABBR.get(state.lower(), state)
         state_full = STATE_ABBR_MAP.get(state.upper(), state)
         keys_to_check = [
@@ -246,7 +248,11 @@ class NotaryCafeScraper:
             f"{state}_{city}",
             f"{state_abbr}_{city}"
         ]
-        return any(k in self.completed_cities for k in keys_to_check)
+        if any(k in self.completed_cities for k in keys_to_check):
+            return True
+        if self.unique_city_names and city.strip().lower() in self.seen_city_names:
+            return True
+        return False
 
     def load_existing_data(self):
         """Loads existing Excel files and progress.json if present to prevent duplicates and maintain state."""
@@ -257,7 +263,8 @@ class NotaryCafeScraper:
                     p = json.load(f)
                     self.completed_cities = set(p.get("completed_cities", []))
                     self.completed_profiles = set(p.get("completed_profiles", []))
-                    print(f"Resumed from progress.json: {len(self.completed_cities)} completed cities, {len(self.completed_profiles)} profiles.")
+                    self.seen_city_names = set(p.get("seen_city_names", []))
+                    print(f"Resumed from progress.json: {len(self.completed_cities)} completed cities, {len(self.completed_profiles)} profiles, {len(self.seen_city_names)} unique city names.")
             except Exception as e:
                 print(f"Warning reading progress.json: {e}")
 
@@ -287,7 +294,12 @@ class NotaryCafeScraper:
             try:
                 df_stats = pd.read_excel(CITY_STATS_EXCEL)
                 self.city_stats_records = df_stats.to_dict("records")
-                print(f"Loaded {len(self.city_stats_records)} existing city stats records.")
+                for r in self.city_stats_records:
+                    c_name = str(r.get("City", "")).strip().lower()
+                    status = str(r.get("Status", ""))
+                    if c_name and status in ["Completed", "No Results", "Skipped (Duplicate Name)"]:
+                        self.seen_city_names.add(c_name)
+                print(f"Loaded {len(self.city_stats_records)} existing city stats records (Tracking {len(self.seen_city_names)} unique city names).")
             except Exception as e:
                 print(f"Warning reading existing city stats excel: {e}")
 
@@ -298,6 +310,7 @@ class NotaryCafeScraper:
             progress = {
                 "completed_cities": list(self.completed_cities),
                 "completed_profiles": list(self.completed_profiles),
+                "seen_city_names": list(self.seen_city_names),
                 "city_stats_count": len(self.city_stats_records),
                 "summary_count": len(self.summary_records),
                 "detailed_count": len(self.detailed_records),
@@ -936,12 +949,38 @@ class NotaryCafeScraper:
                 city = c_info["city"]
                 state = c_info["state"]
                 city_key = f"{city}_{state}"
+                city_name_lower = city.strip().lower()
                 
                 if self.is_city_completed(city, state):
-                    print(f"[Worker {worker_id}] [{c_idx}/{total_count}] Already completed: {city} ({state}). Skipping.")
+                    if self.unique_city_names and city_name_lower in self.seen_city_names:
+                        print(f"[Worker {worker_id}] [{c_idx}/{total_count}] City name '{city}' previously scraped in another state. Skipping ({state}).")
+                    else:
+                        print(f"[Worker {worker_id}] [{c_idx}/{total_count}] Already completed: {city} ({state}). Skipping.")
                     city_queue.task_done()
                     continue
                     
+                # In unique mode: claim city name under lock so the other worker skips duplicate names immediately
+                if self.unique_city_names:
+                    async with self.save_lock:
+                        if city_name_lower in self.seen_city_names:
+                            print(f"[Worker {worker_id}] [{c_idx}/{total_count}] City name '{city}' already claimed/scraped in another state. Skipping ({state}).")
+                            state_abbr = STATE_FULL_TO_ABBR.get(state.lower())
+                            self.completed_cities.add(city_key)
+                            if state_abbr:
+                                self.completed_cities.add(f"{city}_{state_abbr}")
+                            self.city_stats_records.append({
+                                "City": city,
+                                "State": state,
+                                "Search_Query": city,
+                                "Total_Listings_Found": 0,
+                                "Total_Pages": 0,
+                                "Status": "Skipped (Duplicate Name)",
+                                "Scraped_At": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            })
+                            city_queue.task_done()
+                            continue
+                        self.seen_city_names.add(city_name_lower)
+
                 print(f"\n[Worker {worker_id}] >>> [{c_idx}/{total_count}] Processing City: {city} ({state})")
                 
                 search_page = await self.get_valid_search_page(worker_id, context, search_page)
@@ -1007,6 +1046,7 @@ class NotaryCafeScraper:
                                 state_abbr = STATE_FULL_TO_ABBR.get(state.lower())
                                 if state_abbr:
                                     self.completed_cities.add(f"{city}_{state_abbr}")
+                                self.seen_city_names.add(city_name_lower)
                                 self.save_data()
                         else:
                             print(f"[Worker {worker_id}] No further listings on page {current_page}. Pagination complete for {city}.")
@@ -1127,6 +1167,7 @@ class NotaryCafeScraper:
                         state_abbr = STATE_FULL_TO_ABBR.get(state.lower())
                         if state_abbr:
                             self.completed_cities.add(f"{city}_{state_abbr}")
+                        self.seen_city_names.add(city_name_lower)
                         self.save_data()
                     print(f"\n[Worker {worker_id}] [CITY COMPLETE] {city} ({state}) -> Total: {city_listings_count} unique listings across {current_page} pages.")
                     
@@ -1205,6 +1246,8 @@ class NotaryCafeScraper:
                     for w_id in range(1, self.num_workers + 1)
                 ]
                 await asyncio.gather(*worker_tasks)
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                print("\n[PAUSE] Pause requested by user (Ctrl+C). Gracefully closing tabs and saving checkpoint...")
             finally:
                 # Close all contexts
                 for ctx in contexts:
@@ -1214,11 +1257,15 @@ class NotaryCafeScraper:
                         pass
                 async with self.save_lock:
                     self.save_data()
-                await browser.close()
-                print("\nBrowser closed. Scraping session finished.")
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
+                print("\nBrowser closed. Scraping session safely saved.")
                 print(f"Total City Stats Records:      {len(self.city_stats_records)}")
                 print(f"Total Summary Listings Saved:  {len(self.summary_records)}")
                 print(f"Total Detailed Profiles Saved: {len(self.detailed_records)}")
+                print(">> To resume anytime, run: python scrape_notarycafe_complete.py --resume")
 
 
 if __name__ == "__main__":
@@ -1233,7 +1280,11 @@ if __name__ == "__main__":
     parser.add_argument("--tabs", type=int, default=DEFAULT_CONCURRENT_TABS, help=f"Number of concurrent profile tabs per worker (default: {DEFAULT_CONCURRENT_TABS}).")
     parser.add_argument("--max-pages", type=int, default=None, help="Maximum pages to scrape per city.")
     parser.add_argument("--single-city", action="store_true", help="Scrape only the specified city then stop.")
+    parser.add_argument("--unique-cities", action="store_true", default=True, help="Scrape each city name only once across all states (default: True).")
+    parser.add_argument("--all-states", action="store_true", help="Disable unique city name filter and scrape every city in every state.")
     args = parser.parse_args()
+
+    unique_mode = False if args.all_states else True
 
     # Determine execution mode: command line flag OR interactive menu
     if args.fresh:
@@ -1251,7 +1302,7 @@ if __name__ == "__main__":
     else:
         print("\n--- INITIATING RESUME MODE (CHECKING EXISTING FILES) ---")
 
-    print(f"Scraper target: {args.city or 'All Cities (A-Z)'}, {args.state or 'All States'} | Mode: {mode.upper()} | Grouping: {args.sort_by.upper()} | Workers: {args.workers} | Tabs/Worker: {args.tabs} | Single city: {args.single_city} | Max pages: {args.max_pages}")
+    print(f"Scraper target: {args.city or 'All Cities (A-Z)'}, {args.state or 'All States'} | Mode: {mode.upper()} | Grouping: {args.sort_by.upper()} | Unique City Names: {unique_mode} | Workers: {args.workers} | Tabs/Worker: {args.tabs} | Single city: {args.single_city} | Max pages: {args.max_pages}")
     cities_list, total_cities = load_cities_from_excel(target_city=args.city, target_state=args.state, sort_by=args.sort_by)
     scraper = NotaryCafeScraper(
         cities_list, 
@@ -1261,6 +1312,10 @@ if __name__ == "__main__":
         max_pages=args.max_pages, 
         single_city=args.single_city,
         num_workers=args.workers,
-        concurrent_tabs=args.tabs
+        concurrent_tabs=args.tabs,
+        unique_city_names=unique_mode
     )
-    asyncio.run(scraper.run())
+    try:
+        asyncio.run(scraper.run())
+    except KeyboardInterrupt:
+        print("\nScraper stopped by user. All progress is safely saved in Excel and progress.json.")
